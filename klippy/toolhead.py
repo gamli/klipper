@@ -15,10 +15,10 @@ class Move:
     def __init__(self, toolhead, start_pos, end_pos, speed):
         self.toolhead = toolhead
         self.start_pos = tuple(start_pos)
-        self.end_pos = tuple(end_pos)
+        self.end_pos = tuple(end_pos)        
         self.accel = toolhead.max_accel
         self.timing_callbacks = []
-        velocity = min(speed, toolhead.max_velocity)
+        self.velocity = min(speed, toolhead.max_velocity)
         self.is_kinematic_move = True
         self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)]
         self.move_d = move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
@@ -32,17 +32,17 @@ class Move:
             if move_d:
                 inv_move_d = 1. / move_d
             self.accel = 99999999.9
-            velocity = speed
+            self.velocity = speed
             self.is_kinematic_move = False
         else:
             inv_move_d = 1. / move_d
         self.axes_r = [d * inv_move_d for d in axes_d]
-        self.min_move_t = move_d / velocity
+        self.min_move_t = move_d / self.velocity
         # Junction speeds are tracked in velocity squared.  The
         # delta_v2 is the maximum amount of this squared-velocity that
         # can change in this move.
         self.max_start_v2 = 0.
-        self.max_cruise_v2 = velocity**2
+        self.max_cruise_v2 = self.velocity**2
         self.delta_v2 = 2.0 * move_d * self.accel
         self.max_smoothed_v2 = 0.
         self.smooth_delta_v2 = 2.0 * move_d * toolhead.max_accel_to_decel
@@ -248,6 +248,7 @@ class ToolHead:
         self.step_generators = []
         # Create kinematics class
         gcode = self.printer.lookup_object('gcode')
+        self.respond_info = gcode.respond_info
         self.Coord = gcode.Coord
         self.extruder = kinematics.extruder.DummyExtruder(self.printer)
         kin_name = config.get('kinematics')
@@ -269,6 +270,14 @@ class ToolHead:
                                self.cmd_SET_VELOCITY_LIMIT,
                                desc=self.cmd_SET_VELOCITY_LIMIT_help)
         gcode.register_command('M204', self.cmd_M204)
+        # backlash compensation
+        gcode.register_command('M425', self.cmd_M425)
+        self.backlash_compensation_config = [
+            config.getfloat('backlash_compensation_x', 0., minval=0.),
+            config.getfloat('backlash_compensation_y', 0., minval=0.),
+            config.getfloat('backlash_compensation_z', 0., minval=0.),
+        ]
+        self._reset_kin_delta()
         # Load some default modules
         modules = ["gcode_move", "homing", "idle_timeout", "statistics",
                    "manual_probe", "tuning_tower"]
@@ -313,8 +322,30 @@ class ToolHead:
             self._calc_print_time()
         # Queue moves into trapezoid motion queue (trapq)
         next_move_time = self.print_time
+        prev_move_end_v = 0.
         for move in moves:
             if move.is_kinematic_move:
+                backlash_compensation = [self._axis_backlash_compensation(axis, move.axes_r[axis]) for axis in
+                                         [0, 1, 2]]
+                backlash_compensation.append(0.)  # dummy compensation for extruder
+                self.last_kin_delta = map(lambda last_delta, delta: delta if delta else last_delta,
+                                          self.last_kin_delta,
+                                          move.axes_r[0: 3])
+                if any(backlash_compensation):
+                    comp_move = Move(self,
+                                     move.start_pos,
+                                     [a + b for a, b in zip(move.start_pos, backlash_compensation)], move.velocity)
+                    comp_move.set_junction(prev_move_end_v ** 2,
+                                           (prev_move_end_v ** 2 + move.start_v ** 2) / 2. + 1.,
+                                           move.start_v ** 2)
+                    self.trapq_append(
+                        self.trapq, next_move_time,
+                        comp_move.accel_t, comp_move.cruise_t, comp_move.decel_t,
+                        comp_move.start_pos[0], comp_move.start_pos[1], comp_move.start_pos[2],
+                        comp_move.axes_r[0], comp_move.axes_r[1], comp_move.axes_r[2],
+                        comp_move.start_v, comp_move.cruise_v, comp_move.accel)
+                    next_move_time = (next_move_time + comp_move.accel_t
+                                      + comp_move.cruise_t + comp_move.decel_t)
                 self.trapq_append(
                     self.trapq, next_move_time,
                     move.accel_t, move.cruise_t, move.decel_t,
@@ -325,6 +356,7 @@ class ToolHead:
                 self.extruder.move(next_move_time, move)
             next_move_time = (next_move_time + move.accel_t
                               + move.cruise_t + move.decel_t)
+            prev_move_end_v = move.end_v
             for cb in move.timing_callbacks:
                 cb(next_move_time)
         # Generate steps for moves
@@ -594,6 +626,39 @@ class ToolHead:
             accel = min(p, t)
         self.max_accel = accel
         self._calc_junction_deviation()
+    def cmd_M425(self, gcmd):
+        if not gcmd.get_command_parameters():
+            gcmd.respond_info(
+                "BACKLASH COMPENSATION SETTINGS:\n"
+                "\tX: %s\n"
+                "\tY: %s\n"
+                "\tZ: %s\n"
+                % (self.backlash_compensation_config[0],
+                   self.backlash_compensation_config[1],
+                   self.backlash_compensation_config[2]))
+            return
+        if gcmd.get("INIT", default=None):
+            self._reset_kin_delta()
+            gcmd.respond_info("BACKLASH COMPENSATION: INIT")
+            return
+        for axis in [0, 1, 2]:
+            compensation = gcmd.get_float(axis, default=None, minval=0.)
+            if compensation is not None:
+                self.backlash_compensation_config[axis] = compensation
+    def reset_kin_delta(self):
+        self._reset_kin_delta()
+    def _reset_kin_delta(self):
+        self.last_kin_delta = [0., 0., 0.]
+    def _axis_backlash_compensation(self, axis, delta):
+        if not delta:
+            return 0.
+        last_delta = self.last_kin_delta[axis]
+        if not last_delta:
+            return 0.
+        if delta * last_delta < 0.:
+            compensation = math.copysign(1., delta) * self.backlash_compensation_config[axis]
+            self.respond_info("BL-Compensation %s on %s axis" % (compensation, axis))
+            return compensation
 
 def add_printer_objects(config):
     config.get_printer().add_object('toolhead', ToolHead(config))
