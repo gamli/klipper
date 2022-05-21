@@ -334,24 +334,25 @@ class ToolHead:
                 if any(backlash_compensation):
                     if not prev_move:
                         self.respond_info("prev_move is None")
-                    comp_move = Move(self,
-                                     move.start_pos,
-                                     [a + b for a, b in zip(move.start_pos, backlash_compensation)], move.velocity)
-                    comp_move.calc_junction(prev_move)
-                    comp_start_v = comp_move.max_start_v2
-                    comp_end_v = move.start_v ** 2
-                    comp_cruise_v = (comp_start_v + comp_end_v) / 2.
-                    comp_move.set_junction(comp_start_v ** 2,
-                                           comp_cruise_v ** 2,
-                                           comp_end_v ** 2)
-                    self.trapq_append(
-                        self.trapq, next_move_time,
-                        comp_move.accel_t, comp_move.cruise_t, comp_move.decel_t,
-                        comp_move.start_pos[0], comp_move.start_pos[1], comp_move.start_pos[2],
-                        comp_move.axes_r[0], comp_move.axes_r[1], comp_move.axes_r[2],
-                        comp_move.start_v, comp_move.cruise_v, comp_move.accel)
-                    next_move_time = (next_move_time + comp_move.accel_t
-                                      + comp_move.cruise_t + comp_move.decel_t)
+                    else:
+                        comp_move = Move(self,
+                                         move.start_pos,
+                                         [a + b for a, b in zip(move.start_pos, backlash_compensation)], move.velocity)
+                        comp_move.calc_junction(prev_move)
+                        comp_start_v = comp_move.max_start_v2
+                        comp_end_v = move.start_v ** 2
+                        comp_cruise_v = (comp_start_v + comp_end_v) / 2.
+                        comp_move.set_junction(comp_start_v ** 2,
+                                               comp_cruise_v ** 2,
+                                               comp_end_v ** 2)
+                        self.trapq_append(
+                            self.trapq, next_move_time,
+                            comp_move.accel_t, comp_move.cruise_t, comp_move.decel_t,
+                            comp_move.start_pos[0], comp_move.start_pos[1], comp_move.start_pos[2],
+                            comp_move.axes_r[0], comp_move.axes_r[1], comp_move.axes_r[2],
+                            comp_move.start_v, comp_move.cruise_v, comp_move.accel)
+                        next_move_time = (next_move_time + comp_move.accel_t
+                                          + comp_move.cruise_t + comp_move.decel_t)
                 self.trapq_append(
                     self.trapq, next_move_time,
                     move.accel_t, move.cruise_t, move.decel_t,
@@ -663,7 +664,9 @@ class ToolHead:
             return 0.
         if delta * last_delta < 0.:
             compensation = math.copysign(1., delta) * self.backlash_compensation_config[axis]
-            self.respond_info("BL-Compensation %s on %s axis" % (compensation, axis))
+            self.respond_info(
+                "BL-Compensation %s on %s axis (last_delta: %s, delta: %s)"
+                % (compensation, axis, last_delta, delta))
             return compensation
 
 def add_printer_objects(config):
