@@ -279,6 +279,7 @@ class ToolHead:
             0.,  # extruder compensation not supported
         ]
         self.backlash_compensation = [0., 0., 0., 0.]
+        self.dir = [0., 0., 0., 0.]
         # Load some default modules
         modules = ["gcode_move", "homing", "idle_timeout", "statistics",
                    "manual_probe", "tuning_tower"]
@@ -604,7 +605,9 @@ class ToolHead:
             accel = min(p, t)
         self.max_accel = accel
         self._calc_junction_deviation()
+
     def cmd_M425(self, gcmd):
+
         if len(gcmd.get_command_parameters()) == 0:
             gcmd.respond_info(
                 "BACKLASH COMPENSATION CONFIG:\n"
@@ -615,34 +618,48 @@ class ToolHead:
                    self.backlash_compensation_config[1],
                    self.backlash_compensation_config[2]))
             return
+
         for axis, axis_param in enumerate("XYZ"):
             compensation = gcmd.get_float(axis_param, default=None, minval=0.)
             if compensation is not None:
                 self.backlash_compensation_config[axis] = compensation
+
     def _create_move(self, newpos, speed):
-        # self.respond_info(
-        #     "Move Queue:\n\t%s\nnewpos:\n\t%s"
-        #     % ([m.end_pos for m in self.move_queue.queue], newpos))
-        self.respond_info("newpos: %s" % newpos)
-        move_queue = self.move_queue.queue
-        if not move_queue:
-            return Move(self, self.commanded_pos, newpos, speed)
-        last_move = move_queue[-1]
-        last_delta = self._dist(last_move.start_pos, last_move.end_pos)
-        delta = self._dist(last_move.end_pos, newpos)
-        for axis, dir_test in enumerate([ddelta * llast_delta for ddelta, llast_delta in zip(delta, last_delta)]):
-            if self.backlash_compensation_config[axis] and dir_test < 0.:
-                self.backlash_compensation[axis] +=\
-                    math.copysign(1., delta[axis]) * self.backlash_compensation_config[axis]
-                self.respond_info(
-                    "BL-Compensation set to %s on %s axis (last_delta: %s, delta: %s)"
-                    % (self.backlash_compensation, "XYZ"[axis], last_delta, delta))
-        # self.respond_info(
-        #     "Compensated Move: %s -> %s"
-        #     % (self.commanded_pos, self._add(newpos, self.backlash_compensation)))
-        return Move(self, self.commanded_pos, self._add(newpos, self.backlash_compensation), speed)
+
+        comp_config = self.backlash_compensation_config
+        comp = self.backlash_compensation
+
+        newpos_corrected = self._add(newpos, comp)
+
+        last_move = self.move_queue.get_last()
+        if last_move:
+            new_dir = self._dir(last_move.end_pos, newpos_corrected)
+            for axis in [0, 1, 2, 3]:
+                if new_dir[axis] == 0.:
+                    continue
+                if self.dir[axis] == 0.:
+                    self.dir[axis] = new_dir[axis]
+                    continue
+                dir_changed = self.dir[axis] * new_dir[axis] < 0.
+                if dir_changed:
+                    debug_dir_on_axis = self.dir[axis]
+                    self.dir[axis] = new_dir[axis]
+                    if comp_config[axis]:
+                        comp[axis] += self.dir[axis] * comp_config[axis]
+                        newpos_corrected[axis] = newpos[axis] + comp[axis]
+                        self.respond_info(
+                            "BL-Compensation set to %s on %s axis (dir: %0.5f, new_dir: %0.5f)"
+                            % (comp[axis], "XYZ"[axis], debug_dir_on_axis, new_dir[axis]))
+
+        self.respond_info("newpos: %s\tnewpos_corrected: %s" % (
+            ["%0.5f" % p for p in newpos], ["%0.5f" % p for p in newpos_corrected]))
+
+        return Move(self, self.commanded_pos, newpos_corrected, speed)
+
     def _add(self, v0, v1):
         return [vv0 + vv1 for vv0, vv1 in zip(v0, v1)]
+    def _dir(self, v0, v1):
+        return [math.copysign(1., d) for d in self._dist(v0, v1)]
     def _dist(self, v0, v1):
         return [vv1 - vv0 for vv0, vv1 in zip(v0, v1)]
 
