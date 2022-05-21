@@ -276,8 +276,9 @@ class ToolHead:
             config.getfloat('backlash_compensation_x', 0., minval=0.),
             config.getfloat('backlash_compensation_y', 0., minval=0.),
             config.getfloat('backlash_compensation_z', 0., minval=0.),
+            0.,  # extruder compensation not supported
         ]
-        self.backlash_compensation = [0., 0., 0.]
+        self.backlash_compensation = [0., 0., 0., 0.]
         # Load some default modules
         modules = ["gcode_move", "homing", "idle_timeout", "statistics",
                    "manual_probe", "tuning_tower"]
@@ -604,7 +605,7 @@ class ToolHead:
         self.max_accel = accel
         self._calc_junction_deviation()
     def cmd_M425(self, gcmd):
-        if not gcmd.get_command_parameters():
+        if len(gcmd.get_command_parameters()) == 0:
             gcmd.respond_info(
                 "BACKLASH COMPENSATION CONFIG:\n"
                 "\tX: %s\n"
@@ -614,26 +615,35 @@ class ToolHead:
                    self.backlash_compensation_config[1],
                    self.backlash_compensation_config[2]))
             return
-        for axis in [0, 1, 2]:
-            compensation = gcmd.get_float(axis, default=None, minval=0.)
+        for axis, axis_param in enumerate("XYZ"):
+            compensation = gcmd.get_float(axis_param, default=None, minval=0.)
             if compensation is not None:
                 self.backlash_compensation_config[axis] = compensation
     def _create_move(self, newpos, speed):
+        # self.respond_info(
+        #     "Move Queue:\n\t%s\nnewpos:\n\t%s"
+        #     % ([m.end_pos for m in self.move_queue.queue], newpos))
+        self.respond_info("newpos: %s" % newpos)
         move_queue = self.move_queue.queue
-        if len(move_queue) < 2:
+        if not move_queue:
             return Move(self, self.commanded_pos, newpos, speed)
-        delta = self._sub(move_queue[-1], newpos)
-        last_delta = self._sub(move_queue[-2], move_queue[-1])
-        for dir_test, axis in enumerate([[new - last, new] for last, new in zip(delta, last_delta)]):
-            if dir_test < 0:
-                self.backlash_compensation += math.copysign(1., delta[axis]) * self.backlash_compensation_config[axis]
+        last_move = move_queue[-1]
+        last_delta = self._dist(last_move.start_pos, last_move.end_pos)
+        delta = self._dist(last_move.end_pos, newpos)
+        for axis, dir_test in enumerate([ddelta * llast_delta for ddelta, llast_delta in zip(delta, last_delta)]):
+            if self.backlash_compensation_config[axis] and dir_test < 0.:
+                self.backlash_compensation[axis] +=\
+                    math.copysign(1., delta[axis]) * self.backlash_compensation_config[axis]
                 self.respond_info(
                     "BL-Compensation set to %s on %s axis (last_delta: %s, delta: %s)"
                     % (self.backlash_compensation, "XYZ"[axis], last_delta, delta))
+        # self.respond_info(
+        #     "Compensated Move: %s -> %s"
+        #     % (self.commanded_pos, self._add(newpos, self.backlash_compensation)))
         return Move(self, self.commanded_pos, self._add(newpos, self.backlash_compensation), speed)
     def _add(self, v0, v1):
-        return [vv1 + vv0 for vv0, vv1 in zip(v0, v1)]
-    def _sub(self, v0, v1):
+        return [vv0 + vv1 for vv0, vv1 in zip(v0, v1)]
+    def _dist(self, v0, v1):
         return [vv1 - vv0 for vv0, vv1 in zip(v0, v1)]
 
 def add_printer_objects(config):
