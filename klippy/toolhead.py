@@ -322,7 +322,7 @@ class ToolHead:
             self._calc_print_time()
         # Queue moves into trapezoid motion queue (trapq)
         next_move_time = self.print_time
-        prev_move_end_v = 0.
+        prev_move = None
         for move in moves:
             if move.is_kinematic_move:
                 backlash_compensation = [self._axis_backlash_compensation(axis, move.axes_r[axis]) for axis in
@@ -330,14 +330,20 @@ class ToolHead:
                 backlash_compensation.append(0.)  # dummy compensation for extruder
                 self.last_kin_delta = map(lambda last_delta, delta: delta if delta else last_delta,
                                           self.last_kin_delta,
-                                          move.axes_r[0: 3])
+                                          move.axes_r[0: 3])                
                 if any(backlash_compensation):
+                    if not prev_move:
+                        self.respond_info("prev_move is None")
                     comp_move = Move(self,
                                      move.start_pos,
                                      [a + b for a, b in zip(move.start_pos, backlash_compensation)], move.velocity)
-                    comp_move.set_junction(prev_move_end_v ** 2,
-                                           (prev_move_end_v ** 2 + move.start_v ** 2) / 2. + 1.,
-                                           move.start_v ** 2)
+                    comp_move.calc_junction(prev_move)
+                    comp_start_v = comp_move.max_start_v2
+                    comp_end_v = move.start_v ** 2
+                    comp_cruise_v = (comp_start_v + comp_end_v) / 2.
+                    comp_move.set_junction(comp_start_v ** 2,
+                                           comp_cruise_v ** 2,
+                                           comp_end_v ** 2)
                     self.trapq_append(
                         self.trapq, next_move_time,
                         comp_move.accel_t, comp_move.cruise_t, comp_move.decel_t,
@@ -356,7 +362,7 @@ class ToolHead:
                 self.extruder.move(next_move_time, move)
             next_move_time = (next_move_time + move.accel_t
                               + move.cruise_t + move.decel_t)
-            prev_move_end_v = move.end_v
+            prev_move = move
             for cb in move.timing_callbacks:
                 cb(next_move_time)
         # Generate steps for moves
