@@ -330,7 +330,7 @@ class ToolHead:
                 backlash_compensation.append(0.)  # dummy compensation for extruder
                 self.last_kin_delta = map(lambda last_delta, delta: delta if delta else last_delta,
                                           self.last_kin_delta,
-                                          move.axes_r[0: 3])                
+                                          move.axes_r[0: 3])
                 if any(backlash_compensation):
                     if not prev_move:
                         self.respond_info("prev_move is None")
@@ -339,9 +339,9 @@ class ToolHead:
                                          move.start_pos,
                                          [a + b for a, b in zip(move.start_pos, backlash_compensation)], move.velocity)
                         comp_move.calc_junction(prev_move)
-                        comp_start_v = comp_move.max_start_v2
-                        comp_end_v = move.start_v ** 2
-                        comp_cruise_v = (comp_start_v + comp_end_v) / 2.
+                        comp_start_v = prev_move.end_v
+                        comp_end_v = move.start_v
+                        comp_cruise_v = max(comp_start_v, comp_end_v)
                         comp_move.set_junction(comp_start_v ** 2,
                                                comp_cruise_v ** 2,
                                                comp_end_v ** 2)
@@ -664,9 +664,10 @@ class ToolHead:
             return 0.
         if delta * last_delta < 0.:
             compensation = math.copysign(1., delta) * self.backlash_compensation_config[axis]
-            self.respond_info(
-                "BL-Compensation %s on %s axis (last_delta: %s, delta: %s)"
-                % (compensation, axis, last_delta, delta))
+            if compensation != 0.:
+                self.respond_info(
+                    "BL-Compensation %s on %s axis (last_delta: %s, delta: %s)"
+                    % (compensation, axis, last_delta, delta))
             return compensation
 
 def add_printer_objects(config):
