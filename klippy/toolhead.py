@@ -248,6 +248,7 @@ class ToolHead:
         self.step_generators = []
         # Create kinematics class
         gcode = self.printer.lookup_object('gcode')
+        self.respond_info = gcode.respond_info
         self.Coord = gcode.Coord
         self.extruder = kinematics.extruder.DummyExtruder(self.printer)
         kin_name = config.get('kinematics')
@@ -269,6 +270,14 @@ class ToolHead:
                                self.cmd_SET_VELOCITY_LIMIT,
                                desc=self.cmd_SET_VELOCITY_LIMIT_help)
         gcode.register_command('M204', self.cmd_M204)
+        # backlash compensation
+        gcode.register_command('M425', self.cmd_M425)
+        self.backlash_compensation_config = [
+            config.getfloat('backlash_compensation_x', 0., minval=0.),
+            config.getfloat('backlash_compensation_y', 0., minval=0.),
+            config.getfloat('backlash_compensation_z', 0., minval=0.),
+        ]
+        self.backlash_compensation = [0., 0., 0.]
         # Load some default modules
         modules = ["gcode_move", "homing", "idle_timeout", "statistics",
                    "manual_probe", "tuning_tower"]
@@ -408,7 +417,7 @@ class ToolHead:
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
     def move(self, newpos, speed):
-        move = Move(self, self.commanded_pos, newpos, speed)
+        move = self._create_move(newpos, speed)
         if not move.move_d:
             return
         if move.is_kinematic_move:
@@ -594,6 +603,38 @@ class ToolHead:
             accel = min(p, t)
         self.max_accel = accel
         self._calc_junction_deviation()
+    def cmd_M425(self, gcmd):
+        if not gcmd.get_command_parameters():
+            gcmd.respond_info(
+                "BACKLASH COMPENSATION CONFIG:\n"
+                "\tX: %s\n"
+                "\tY: %s\n"
+                "\tZ: %s\n"
+                % (self.backlash_compensation_config[0],
+                   self.backlash_compensation_config[1],
+                   self.backlash_compensation_config[2]))
+            return
+        for axis in [0, 1, 2]:
+            compensation = gcmd.get_float(axis, default=None, minval=0.)
+            if compensation is not None:
+                self.backlash_compensation_config[axis] = compensation
+    def _create_move(self, newpos, speed):
+        move_queue = self.move_queue.queue
+        if len(move_queue) < 2:
+            return Move(self, self.commanded_pos, newpos, speed)
+        delta = self._sub(move_queue[-1], newpos)
+        last_delta = self._sub(move_queue[-2], move_queue[-1])
+        for dir_test, axis in enumerate([[new - last, new] for last, new in zip(delta, last_delta)]):
+            if dir_test < 0:
+                self.backlash_compensation += math.copysign(1., delta[axis]) * self.backlash_compensation_config[axis]
+                self.respond_info(
+                    "BL-Compensation set to %s on %s axis (last_delta: %s, delta: %s)"
+                    % (self.backlash_compensation, "XYZ"[axis], last_delta, delta))
+        return Move(self, self.commanded_pos, self._add(newpos, self.backlash_compensation), speed)
+    def _add(self, v0, v1):
+        return [vv1 + vv0 for vv0, vv1 in zip(v0, v1)]
+    def _sub(self, v0, v1):
+        return [vv1 - vv0 for vv0, vv1 in zip(v0, v1)]
 
 def add_printer_objects(config):
     config.get_printer().add_object('toolhead', ToolHead(config))
