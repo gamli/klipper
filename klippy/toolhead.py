@@ -338,6 +338,10 @@ class ToolHead:
                               + move.cruise_t + move.decel_t)
             for cb in move.timing_callbacks:
                 cb(next_move_time)
+            if move.is_backlash_compensation_move:
+                ffi_lib = chelper.get_ffi()
+                ffi_lib.trapq_set_position(
+                    self.trapq, next_move_time, move.start_pos[0], move.start_pos[1], move.start_pos[2])
         # Generate steps for moves
         if self.special_queuing_state:
             self._update_drip_move_time(next_move_time)
