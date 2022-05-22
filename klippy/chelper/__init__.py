@@ -75,6 +75,8 @@ defs_itersolve = """
     void itersolve_set_position(struct stepper_kinematics *sk
         , double x, double y, double z);
     double itersolve_get_commanded_pos(struct stepper_kinematics *sk);
+    void itersolve_set_backlash_compensation(struct stepper_kinematics *sk, double compensation);
+    double itersolve_get_backlash_compensation(struct stepper_kinematics *sk);
 """
 
 defs_trapq = """

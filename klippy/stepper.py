@@ -20,12 +20,14 @@ MIN_BOTH_EDGE_DURATION = 0.000000200
 class MCU_stepper:
     def __init__(self, name, step_pin_params, dir_pin_params,
                  rotation_dist, steps_per_rotation,
-                 step_pulse_duration=None, units_in_radians=False):
+                 step_pulse_duration=None, units_in_radians=False,
+                 backlash_compensation=0.):
         self._name = name
         self._rotation_dist = rotation_dist
         self._steps_per_rotation = steps_per_rotation
         self._step_pulse_duration = step_pulse_duration
         self._units_in_radians = units_in_radians
+        self._backlash_compensation = backlash_compensation
         self._step_dist = rotation_dist / steps_per_rotation
         self._mcu = step_pin_params['chip']
         self._oid = oid = self._mcu.create_oid()
@@ -210,6 +212,8 @@ class MCU_stepper:
     def add_active_callback(self, cb):
         self._active_callbacks.append(cb)
     def generate_steps(self, flush_time):
+        # set backlash compensation
+        chelper.get_ffi()[1].itersolve_set_backlash_compensation(self._stepper_kinematics, self._backlash_compensation)
         # Check for activity if necessary
         if self._active_callbacks:
             sk = self._stepper_kinematics
@@ -228,6 +232,10 @@ class MCU_stepper:
         ffi_main, ffi_lib = chelper.get_ffi()
         a = axis.encode()
         return ffi_lib.itersolve_is_active_axis(self._stepper_kinematics, a)
+    def set_backlash_compensation(self, compensation):
+        self._backlash_compensation = compensation
+    def get_backlash_compensation(self):
+        return self._backlash_compensation
 
 # Helper code to build a stepper object from a config section
 def PrinterStepper(config, units_in_radians=False):
@@ -243,9 +251,11 @@ def PrinterStepper(config, units_in_radians=False):
         config, units_in_radians, True)
     step_pulse_duration = config.getfloat('step_pulse_duration', None,
                                           minval=0., maxval=.001)
+    backlash_compensation = config.getfloat('backlash_compensation', 0., minval=0.)
     mcu_stepper = MCU_stepper(name, step_pin_params, dir_pin_params,
                               rotation_dist, steps_per_rotation,
-                              step_pulse_duration, units_in_radians)
+                              step_pulse_duration, units_in_radians,
+                              backlash_compensation)
     # Register with helper modules
     for mname in ['stepper_enable', 'force_move', 'motion_report']:
         m = printer.load_object(config, mname)

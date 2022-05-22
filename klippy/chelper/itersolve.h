@@ -13,7 +13,7 @@ typedef double (*sk_calc_callback)(struct stepper_kinematics *sk, struct move *m
                                    , double move_time);
 typedef void (*sk_post_callback)(struct stepper_kinematics *sk);
 struct stepper_kinematics {
-    double step_dist, commanded_pos;
+    double step_dist, commanded_pos, backlash_compensation;
     struct stepcompress *sc;
 
     double last_flush_time, last_move_time;
@@ -37,5 +37,7 @@ double itersolve_calc_position_from_coord(struct stepper_kinematics *sk
 void itersolve_set_position(struct stepper_kinematics *sk
                             , double x, double y, double z);
 double itersolve_get_commanded_pos(struct stepper_kinematics *sk);
+void itersolve_set_backlash_compensation(struct stepper_kinematics *sk, double compensation);
+double itersolve_get_backlash_compensation(struct stepper_kinematics *sk);
 
 #endif // itersolve.h

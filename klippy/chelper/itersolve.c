@@ -31,6 +31,7 @@ itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
 {
     sk_calc_callback calc_position_cb = sk->calc_position_cb;
     double half_step = .5 * sk->step_dist;
+    double backlash_compensation_half_steps = (int)(sk->backlash_compensation / half_step);
     double start = abs_start - m->print_time, end = abs_end - m->print_time;
     if (start < 0.)
         start = 0.;
@@ -87,8 +88,11 @@ itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
             } else if (rel_dist < -(half_step + half_step + .000000010)) {
                 // Found direction change
                 sdir = !sdir;
-                target = (sdir ? target + half_step + half_step
-                          : target - half_step - half_step);
+                double backlash_compensation = half_step * backlash_compensation_half_steps;
+                target =
+                   sdir
+                      ? target + half_step + half_step + backlash_compensation
+                      : target - half_step - half_step - backlash_compensation;
                 low_time = last_time;
                 high_time = guess.time;
                 is_dir_change = have_bracket = 1;
@@ -277,4 +281,17 @@ double __visible
 itersolve_get_commanded_pos(struct stepper_kinematics *sk)
 {
     return sk->commanded_pos;
+}
+
+
+void __visible
+itersolve_set_backlash_compensation(struct stepper_kinematics *sk, double compensation)
+{
+    sk->backlash_compensation = compensation;
+}
+
+double __visible
+itersolve_get_backlash_compensation(struct stepper_kinematics *sk)
+{
+    return sk->backlash_compensation;
 }
