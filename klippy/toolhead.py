@@ -12,7 +12,7 @@ import mcu, chelper, kinematics.extruder
 
 # Class to track each move request
 class Move:
-    def __init__(self, toolhead, start_pos, end_pos, speed):
+    def __init__(self, toolhead, start_pos, end_pos, speed, is_backlash_compensation_move=False):
         self.toolhead = toolhead
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
@@ -20,6 +20,7 @@ class Move:
         self.timing_callbacks = []
         velocity = min(speed, toolhead.max_velocity)
         self.is_kinematic_move = True
+        self.is_backlash_compensation_move = is_backlash_compensation_move
         self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)]
         self.move_d = move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
         if move_d < .000000001:
@@ -278,7 +279,6 @@ class ToolHead:
             config.getfloat('backlash_compensation_z', 0., minval=0.),
             0.,  # extruder compensation not supported
         ]
-        self.backlash_compensation = [0., 0., 0., 0.]
         self.dir = [0., 0., 0., 0.]
         # Load some default modules
         modules = ["gcode_move", "homing", "idle_timeout", "statistics",
@@ -419,17 +419,18 @@ class ToolHead:
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
     def move(self, newpos, speed):
-        move = self._create_move(newpos, speed)
-        if not move.move_d:
-            return
-        if move.is_kinematic_move:
-            self.kin.check_move(move)
-        if move.axes_d[3]:
-            self.extruder.check_move(move)
-        self.commanded_pos[:] = move.end_pos
-        self.move_queue.add_move(move)
-        if self.print_time > self.need_check_stall:
-            self._check_stall()
+        for move in self._create_moves(newpos, speed):
+            if not move.move_d:
+                return
+            if move.is_kinematic_move:
+                self.kin.check_move(move)
+            if move.axes_d[3]:
+                self.extruder.check_move(move)
+            if not move.is_backlash_compensation_move:
+                self.commanded_pos[:] = move.end_pos
+            self.move_queue.add_move(move)
+            if self.print_time > self.need_check_stall:
+                self._check_stall()
     def manual_move(self, coord, speed):
         curpos = list(self.commanded_pos)
         for i in range(len(coord)):
@@ -624,37 +625,32 @@ class ToolHead:
             if compensation is not None:
                 self.backlash_compensation_config[axis] = compensation
 
-    def _create_move(self, newpos, speed):
-
-        comp_config = self.backlash_compensation_config
-        comp = self.backlash_compensation
-
-        newpos_corrected = self._add(newpos, comp)
+    def _create_moves(self, newpos, speed):
 
         last_move = self.move_queue.get_last()
         if last_move:
-            new_dir = self._dir(last_move.end_pos, newpos_corrected)
-            for axis in [0, 1, 2, 3]:
+            new_dir = self._dir(last_move.end_pos, newpos)
+            compensation = [0., 0., 0., 0.]
+            debug_dir_changes = ["_", "_", "_"]
+            for axis in filter(lambda a: self.backlash_compensation_config[a], [0, 1, 2]):
                 if new_dir[axis] == 0.:
                     continue
                 if self.dir[axis] == 0.:
                     self.dir[axis] = new_dir[axis]
                     continue
-                dir_changed = self.dir[axis] * new_dir[axis] < 0.
-                if dir_changed:
-                    debug_dir_on_axis = self.dir[axis]
+                if self.dir[axis] != new_dir[axis]:
+                    debug_dir_changes[axis] = "-/+" if new_dir[axis] > 0 else "+/-"
+                    compensation[axis] = new_dir[axis] * self.backlash_compensation_config[axis]
                     self.dir[axis] = new_dir[axis]
-                    if comp_config[axis]:
-                        comp[axis] += self.dir[axis] * comp_config[axis]
-                        newpos_corrected[axis] = newpos[axis] + comp[axis]
-                        self.respond_info(
-                            "BL-Compensation set to %s on %s axis (dir: %0.5f, new_dir: %0.5f)"
-                            % (comp[axis], "XYZ"[axis], debug_dir_on_axis, new_dir[axis]))
+            if any(compensation):
+                compensation_start = self.commanded_pos
+                compensation_end = self._add(self.commanded_pos, compensation)
+                self.respond_info(
+                    "BL-Compensation Move: %s -> %s (dir changes: %s)"
+                    % (compensation_start[:3], compensation_end[:3], debug_dir_changes))
+                yield Move(self, compensation_start, compensation_end, self.max_velocity, True)
 
-        self.respond_info("newpos: %s\tnewpos_corrected: %s" % (
-            ["%0.5f" % p for p in newpos], ["%0.5f" % p for p in newpos_corrected]))
-
-        return Move(self, self.commanded_pos, newpos_corrected, speed)
+        yield Move(self, self.commanded_pos, newpos, speed)
 
     def _add(self, v0, v1):
         return [vv0 + vv1 for vv0, vv1 in zip(v0, v1)]
