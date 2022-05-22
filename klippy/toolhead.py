@@ -4,6 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging, importlib
+from pprint import pformat
+
 import mcu, chelper, kinematics.extruder
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
@@ -13,6 +15,10 @@ import mcu, chelper, kinematics.extruder
 # Class to track each move request
 class Move:
     def __init__(self, toolhead, start_pos, end_pos, speed, is_backlash_compensation_move=False):
+        if all([c0 == c1 for c0, c1 in zip(start_pos, end_pos)]):
+            raise RuntimeError("start_pos equals end_pos: %s" % start_pos)
+        if speed == 0.:
+            raise RuntimeError("speed must not be 0")
         self.toolhead = toolhead
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
@@ -149,17 +155,19 @@ class MoveQueue:
                     if update_flush_count and peak_cruise_v2:
                         flush_count = i
                         update_flush_count = False
-                    peak_cruise_v2 = min(move.max_cruise_v2, (
+                    next_peak_cruise_v2 = min(move.max_cruise_v2, (
                         smoothed_v2 + reachable_smoothed_v2) * .5)
                     if delayed:
                         # Propagate peak_cruise_v2 to any delayed moves
                         if not update_flush_count and i < flush_count:
-                            mc_v2 = peak_cruise_v2
+                            mc_v2 = next_peak_cruise_v2
                             for m, ms_v2, me_v2 in reversed(delayed):
                                 mc_v2 = min(mc_v2, ms_v2)
                                 m.set_junction(min(ms_v2, mc_v2), mc_v2
                                                , min(me_v2, mc_v2))
                         del delayed[:]
+                    if not move.is_backlash_compensation_move:
+                        peak_cruise_v2 = next_peak_cruise_v2
                 if not update_flush_count and i < flush_count:
                     cruise_v2 = min((start_v2 + reachable_start_v2) * .5
                                     , move.max_cruise_v2, peak_cruise_v2)
@@ -168,8 +176,9 @@ class MoveQueue:
             else:
                 # Delay calculating this move until peak_cruise_v2 is known
                 delayed.append((move, start_v2, next_end_v2))
-            next_end_v2 = start_v2
-            next_smoothed_v2 = smoothed_v2
+            if not move.is_backlash_compensation_move:
+                next_end_v2 = start_v2
+                next_smoothed_v2 = smoothed_v2
         if update_flush_count or not flush_count:
             return
         # Generate step times for all moves ready to be flushed
@@ -196,6 +205,8 @@ class DripModeEndSignal(Exception):
     pass
 
 # Main code to track events (and their timing) on the printer toolhead
+
+
 class ToolHead:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -272,7 +283,7 @@ class ToolHead:
                                desc=self.cmd_SET_VELOCITY_LIMIT_help)
         gcode.register_command('M204', self.cmd_M204)
         # backlash compensation
-        gcode.register_command('M425', self.cmd_M425)
+        gcode.register_command('M425', self.cmd_m425)
         self.backlash_compensation_config = [
             config.getfloat('backlash_compensation_x', 0., minval=0.),
             config.getfloat('backlash_compensation_y', 0., minval=0.),
@@ -326,6 +337,8 @@ class ToolHead:
         next_move_time = self.print_time
         for move in moves:
             if move.is_kinematic_move:
+                if move.accel == 0.:
+                    self.respond_info("Move with accel 0.:\n%s" % pformat(vars(move)))
                 self.trapq_append(
                     self.trapq, next_move_time,
                     move.accel_t, move.cruise_t, move.decel_t,
@@ -334,14 +347,13 @@ class ToolHead:
                     move.start_v, move.cruise_v, move.accel)
             if move.axes_d[3]:
                 self.extruder.move(next_move_time, move)
+            if move.is_backlash_compensation_move:
+                chelper.get_ffi()[1].trapq_set_position(
+                    self.trapq, next_move_time, move.start_pos[0], move.start_pos[1], move.start_pos[2])
             next_move_time = (next_move_time + move.accel_t
                               + move.cruise_t + move.decel_t)
             for cb in move.timing_callbacks:
                 cb(next_move_time)
-            if move.is_backlash_compensation_move:
-                ffi_lib = chelper.get_ffi()
-                ffi_lib.trapq_set_position(
-                    self.trapq, next_move_time, move.start_pos[0], move.start_pos[1], move.start_pos[2])
         # Generate steps for moves
         if self.special_queuing_state:
             self._update_drip_move_time(next_move_time)
@@ -611,8 +623,7 @@ class ToolHead:
         self.max_accel = accel
         self._calc_junction_deviation()
 
-    def cmd_M425(self, gcmd):
-
+    def cmd_m425(self, gcmd):
         if len(gcmd.get_command_parameters()) == 0:
             gcmd.respond_info(
                 "BACKLASH COMPENSATION CONFIG:\n"
@@ -623,17 +634,16 @@ class ToolHead:
                    self.backlash_compensation_config[1],
                    self.backlash_compensation_config[2]))
             return
-
         for axis, axis_param in enumerate("XYZ"):
             compensation = gcmd.get_float(axis_param, default=None, minval=0.)
             if compensation is not None:
                 self.backlash_compensation_config[axis] = compensation
 
     def _create_moves(self, newpos, speed):
-
         last_move = self.move_queue.get_last()
         if last_move:
-            new_dir = self._dir(last_move.end_pos, newpos)
+            last_dir = self.dir[:]
+            new_dir = v_dir(last_move.end_pos, newpos)
             compensation = [0., 0., 0., 0.]
             debug_dir_changes = ["_", "_", "_"]
             for axis in filter(lambda a: self.backlash_compensation_config[a], [0, 1, 2]):
@@ -648,20 +658,25 @@ class ToolHead:
                     self.dir[axis] = new_dir[axis]
             if any(compensation):
                 compensation_start = self.commanded_pos
-                compensation_end = self._add(self.commanded_pos, compensation)
+                compensation_end = v_add(self.commanded_pos, compensation)
                 self.respond_info(
-                    "BL-Compensation Move: %s -> %s (dir changes: %s)"
-                    % (compensation_start[:3], compensation_end[:3], debug_dir_changes))
-                yield Move(self, compensation_start, compensation_end, self.max_velocity, True)
-
+                    "BL-Compensation Move: last: %s compensate: %s -> %s\n\tDirection: last: %s now: %s diff: %s)"
+                    % (last_move.start_pos[:3], compensation_start[:3], compensation_end[:3], last_dir, new_dir, debug_dir_changes))
+                yield Move(self, compensation_start, compensation_end, speed, True)
         yield Move(self, self.commanded_pos, newpos, speed)
 
-    def _add(self, v0, v1):
-        return [vv0 + vv1 for vv0, vv1 in zip(v0, v1)]
-    def _dir(self, v0, v1):
-        return [math.copysign(1., d) for d in self._dist(v0, v1)]
-    def _dist(self, v0, v1):
-        return [vv1 - vv0 for vv0, vv1 in zip(v0, v1)]
+
+def v_dir(v0, v1):
+    return [0. if d == 0. else math.copysign(1., d) for d in v_dist(v0, v1)]
+
+
+def v_dist(v0, v1):
+    return [vv1 - vv0 for vv0, vv1 in zip(v0, v1)]
+
+
+def v_add(v0, v1):
+    return [vv0 + vv1 for vv0, vv1 in zip(v0, v1)]
+
 
 def add_printer_objects(config):
     config.get_printer().add_object('toolhead', ToolHead(config))
