@@ -23,7 +23,7 @@ move_alloc(void)
 // Fill and add a move to the trapezoid velocity queue
 void __visible
 trapq_append(struct trapq *tq, double print_time
-             , double accel_t, double cruise_t, double decel_t
+             , double accel_t, double cruise_t, double backlash_t, double decel_t
              , double start_pos_x, double start_pos_y, double start_pos_z
              , double axes_r_x, double axes_r_y, double axes_r_z
              , double start_v, double cruise_v, double accel)
@@ -47,6 +47,7 @@ trapq_append(struct trapq *tq, double print_time
         struct move *m = move_alloc();
         m->print_time = print_time;
         m->move_t = cruise_t;
+        m->backlash_t = backlash_t;
         m->start_v = cruise_v;
         m->half_accel = 0.;
         m->start_pos = start_pos;

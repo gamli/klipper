@@ -12,7 +12,7 @@ import mcu, chelper, kinematics.extruder
 
 # Class to track each move request
 class Move:
-    def __init__(self, toolhead, start_pos, end_pos, speed):
+    def __init__(self, toolhead, start_pos, end_pos, backlash_axes_d, speed):
         self.toolhead = toolhead
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
@@ -22,6 +22,7 @@ class Move:
         self.is_kinematic_move = True
         self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)]
         self.move_d = move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
+        self.backlash_d = backlash_d = math.sqrt(sum([d*d for d in backlash_axes_d[:3]]))
         if move_d < .000000001:
             # Extrude only move
             self.end_pos = (start_pos[0], start_pos[1], start_pos[2],
@@ -37,22 +38,22 @@ class Move:
         else:
             inv_move_d = 1. / move_d
         self.axes_r = [d * inv_move_d for d in axes_d]
-        self.min_move_t = move_d / velocity
+        self.min_move_t = (move_d + backlash_d) / velocity
         # Junction speeds are tracked in velocity squared.  The
         # delta_v2 is the maximum amount of this squared-velocity that
         # can change in this move.
         self.max_start_v2 = 0.
         self.max_cruise_v2 = velocity**2
-        self.delta_v2 = 2.0 * move_d * self.accel
+        self.delta_v2 = 2.0 * (move_d + backlash_d) * self.accel
         self.max_smoothed_v2 = 0.
-        self.smooth_delta_v2 = 2.0 * move_d * toolhead.max_accel_to_decel
+        self.smooth_delta_v2 = 2.0 * (move_d + backlash_d) * toolhead.max_accel_to_decel
     def limit_speed(self, speed, accel):
         speed2 = speed**2
         if speed2 < self.max_cruise_v2:
             self.max_cruise_v2 = speed2
-            self.min_move_t = self.move_d / speed
+            self.min_move_t = (self.move_d + self.backlash_d) / speed
         self.accel = min(self.accel, accel)
-        self.delta_v2 = 2.0 * self.move_d * self.accel
+        self.delta_v2 = 2.0 * (self.move_d + self.backlash_d) * self.accel
         self.smooth_delta_v2 = min(self.smooth_delta_v2, self.delta_v2)
     def move_error(self, msg="Move out of range"):
         ep = self.end_pos
@@ -94,7 +95,7 @@ class Move:
         half_inv_accel = .5 / self.accel
         accel_d = (cruise_v2 - start_v2) * half_inv_accel
         decel_d = (cruise_v2 - end_v2) * half_inv_accel
-        cruise_d = self.move_d - accel_d - decel_d
+        cruise_d = self.move_d + self.backlash_d - accel_d - decel_d
         # Determine move velocities
         self.start_v = start_v = math.sqrt(start_v2)
         self.cruise_v = cruise_v = math.sqrt(cruise_v2)
@@ -103,6 +104,7 @@ class Move:
         # distance divided by average velocity)
         self.accel_t = accel_d / ((start_v + cruise_v) * 0.5)
         self.cruise_t = cruise_d / cruise_v
+        self.backlash_t = self.backlash_d / cruise_v
         self.decel_t = decel_d / ((end_v + cruise_v) * 0.5)
 
 LOOKAHEAD_FLUSH_TIME = 0.250
@@ -262,6 +264,7 @@ class ToolHead:
             msg = "Error loading kinematics '%s'" % (kin_name,)
             logging.exception(msg)
             raise config.error(msg)
+        self.last_dir = [0, 0, 0]
         # Register commands
         gcode.register_command('G4', self.cmd_G4)
         gcode.register_command('M400', self.cmd_M400)
@@ -317,7 +320,7 @@ class ToolHead:
             if move.is_kinematic_move:
                 self.trapq_append(
                     self.trapq, next_move_time,
-                    move.accel_t, move.cruise_t, move.decel_t,
+                    move.accel_t, move.cruise_t, move.backlash_t, move.decel_t,
                     move.start_pos[0], move.start_pos[1], move.start_pos[2],
                     move.axes_r[0], move.axes_r[1], move.axes_r[2],
                     move.start_v, move.cruise_v, move.accel)
@@ -408,7 +411,7 @@ class ToolHead:
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
     def move(self, newpos, speed):
-        move = Move(self, self.commanded_pos, newpos, speed)
+        move = self._create_move(newpos, speed)
         if not move.move_d:
             return
         if move.is_kinematic_move:
@@ -419,6 +422,20 @@ class ToolHead:
         self.move_queue.add_move(move)
         if self.print_time > self.need_check_stall:
             self._check_stall()
+    def _create_move(self, newpos, speed):
+        backlash_settings = [0., 0., 0.]
+        backlash_axes_d = [0., 0., 0.]
+        new_dir = [0. if start == end else 1. if start < end else -1
+                   for start, end
+                   in zip(self.commanded_pos[:3], newpos[:3])]
+        if any(new_dir):
+            backlash_axes_d = [new_d * setting if new_d != 0. and new_d != last_d else 0.
+                               for new_d, last_d, setting
+                               in zip(new_dir, self.last_dir, backlash_settings)]
+            self.last_dir = [new_d if new_d != 0 else last_d
+                             for new_d, last_d
+                             in zip(new_dir, self.last_dir)]
+        return Move(self, self.commanded_pos, newpos, backlash_axes_d, speed)
     def manual_move(self, coord, speed):
         curpos = list(self.commanded_pos)
         for i in range(len(coord)):
