@@ -42,11 +42,6 @@ default_logger(const char *msg)
 
 static void (*python_logging_callback)(const char *msg) = default_logger;
 
-void __visible
-set_python_logging_callback(void (*func)(const char *))
-{
-    python_logging_callback = func;
-}
 
 // Log an error message
 void
@@ -59,6 +54,34 @@ errorf(const char *fmt, ...)
     va_end(args);
     buf[sizeof(buf)-1] = '\0';
     python_logging_callback(buf);
+}
+
+void __visible
+set_python_logging_callback(void (*func)(const char *))
+{
+    python_logging_callback = func;
+}
+
+static void (*python_log_info_callback)(const char *msg) = default_logger;
+
+void __visible
+set_python_log_info_callback(void (*func)(const char *))
+{
+    python_log_info_callback = func;
+}
+
+
+// Log an info message
+void
+infof(const char *fmt, ...)
+{
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    buf[sizeof(buf)-1] = '\0';
+    python_log_info_callback(buf);
 }
 
 // Report 'errno' in a message written to stderr

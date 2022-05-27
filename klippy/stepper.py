@@ -52,6 +52,7 @@ class MCU_stepper:
         self._trapq = ffi_main.NULL
         self._mcu.get_printer().register_event_handler('klippy:connect',
                                                        self._query_mcu_position)
+        self._respond_info = self._mcu.get_printer().lookup_object('gcode').respond_info
     def get_mcu(self):
         return self._mcu
     def get_name(self, short=False):
@@ -210,6 +211,7 @@ class MCU_stepper:
     def add_active_callback(self, cb):
         self._active_callbacks.append(cb)
     def generate_steps(self, flush_time):
+        #self._respond_info("STEPPER GENERATE STEPS: %s" % self._name)
         # Check for activity if necessary
         if self._active_callbacks:
             sk = self._stepper_kinematics

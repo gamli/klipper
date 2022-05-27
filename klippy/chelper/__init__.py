@@ -86,9 +86,10 @@ defs_trapq = """
     };
 
     void trapq_append(struct trapq *tq, double print_time
-        , double accel_t, double cruise_t, double backlash_t, double decel_t
+        , double accel_t, double cruise_t, double decel_t
         , double start_pos_x, double start_pos_y, double start_pos_z
         , double axes_r_x, double axes_r_y, double axes_r_z
+        , double backlash_axes_x, double backlash_axes_y, double backlash_axes_z
         , double start_v, double cruise_v, double accel);
     struct trapq *trapq_alloc(void);
     void trapq_free(struct trapq *tq);
@@ -194,6 +195,7 @@ defs_trdispatch = """
 
 defs_pyhelper = """
     void set_python_logging_callback(void (*func)(const char *));
+    void set_python_log_info_callback(void (*func)(const char *));
     double get_monotonic(void);
 """
 
@@ -252,6 +254,10 @@ pyhelper_logging_callback = None
 # Hepler invoked from C errorf() code to log errors
 def logging_callback(msg):
     logging.error(FFI_main.string(msg))
+    
+# Hepler invoked from C einfof() code to log errors
+def log_info_callback(msg):
+    logging.info(FFI_main.string(msg))
 
 # Return the Foreign Function Interface api to the caller
 def get_ffi():
@@ -276,6 +282,10 @@ def get_ffi():
         pyhelper_logging_callback = FFI_main.callback("void func(const char *)",
                                                       logging_callback)
         FFI_lib.set_python_logging_callback(pyhelper_logging_callback)
+        # Setup info logging
+        pyhelper_log_info_callback = FFI_main.callback("void func(const char *)",
+                                                      log_info_callback)
+        FFI_lib.set_python_log_info_callback(pyhelper_log_info_callback)
     return FFI_main, FFI_lib
 
 

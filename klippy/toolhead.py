@@ -3,8 +3,11 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import itertools
 import math, logging, importlib
-import mcu, chelper, kinematics.extruder
+import traceback
+
+import chelper, kinematics.extruder
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
@@ -12,10 +15,11 @@ import mcu, chelper, kinematics.extruder
 
 # Class to track each move request
 class Move:
-    def __init__(self, toolhead, start_pos, end_pos, backlash_axes_d, speed):
+    def __init__(self, toolhead, start_pos, end_pos, backlash_axes_d, speed, respond_info):
         self.toolhead = toolhead
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
+        self.backlash_axes_d = backlash_axes_d
         self.accel = toolhead.max_accel
         self.timing_callbacks = []
         velocity = min(speed, toolhead.max_velocity)
@@ -47,6 +51,29 @@ class Move:
         self.delta_v2 = 2.0 * (move_d + backlash_d) * self.accel
         self.max_smoothed_v2 = 0.
         self.smooth_delta_v2 = 2.0 * (move_d + backlash_d) * toolhead.max_accel_to_decel
+        self._respond_info = respond_info
+    def __str__(self):
+        if not self.is_kinematic_move:
+            return format_section("Move (extruder only)", format_key_value_list(("extrusion value", self.axes_r[3])))
+        key_values = (("start/end", format_value_change(self.start_pos[:3], self.end_pos[:3])),
+                      ("axes_d", self.axes_d),
+                      ("axes_r", self.axes_r),
+                      ("backlash_axes_d", self.backlash_axes_d),
+                      ("(move_d, backlash_d)", (self.move_d, self.backlash_d)),
+                      ("accel", self.accel),
+                      ("min_move_t", self.min_move_t),
+                      ("max_start_v2", self.max_start_v2),
+                      ("max_cruise_v2", self.max_cruise_v2),
+                      ("delta_v2", self.delta_v2),
+                      ("max_smoothed_v2", self.max_smoothed_v2),
+                      ("smooth_delta_v2", self.smooth_delta_v2),
+                      ("start_v", self.start_v if hasattr(self, "start_v") else "N/A"),
+                      ("cruise_v", self.cruise_v if hasattr(self, "cruise_v") else "N/A"),
+                      ("end_v", self.end_v if hasattr(self, "end_v") else "N/A"),
+                      ("accel_t", self.accel_t if hasattr(self, "accel_t") else "N/A"),
+                      ("cruise_t", self.cruise_t if hasattr(self, "cruise_t") else "N/A"),
+                      ("decel_t", self.decel_t if hasattr(self, "decel_t") else "N/A"),)
+        return format_section("Move", format_key_value_list(key_values))
     def limit_speed(self, speed, accel):
         speed2 = speed**2
         if speed2 < self.max_cruise_v2:
@@ -78,8 +105,8 @@ class Move:
              / (1. - sin_theta_d2))
         # Approximated circle must contact moves no further away than mid-move
         tan_theta_d2 = sin_theta_d2 / math.sqrt(0.5*(1.0+junction_cos_theta))
-        move_centripetal_v2 = .5 * self.move_d * tan_theta_d2 * self.accel
-        prev_move_centripetal_v2 = (.5 * prev_move.move_d * tan_theta_d2
+        move_centripetal_v2 = .5 * (self.move_d + self.backlash_d) * tan_theta_d2 * self.accel
+        prev_move_centripetal_v2 = (.5 * (prev_move.move_d + prev_move.backlash_d) * tan_theta_d2
                                     * prev_move.accel)
         # Apply limits
         self.max_start_v2 = min(
@@ -90,6 +117,10 @@ class Move:
         self.max_smoothed_v2 = min(
             self.max_start_v2
             , prev_move.max_smoothed_v2 + prev_move.smooth_delta_v2)
+        self._respond_info(
+            format_section(
+                "Move: calc_junction()",
+                format_columns("   |   ", str(prev_move), str(self))))
     def set_junction(self, start_v2, cruise_v2, end_v2):
         # Determine accel, cruise, and decel portions of the move distance
         half_inv_accel = .5 / self.accel
@@ -104,18 +135,19 @@ class Move:
         # distance divided by average velocity)
         self.accel_t = accel_d / ((start_v + cruise_v) * 0.5)
         self.cruise_t = cruise_d / cruise_v
-        self.backlash_t = self.backlash_d / cruise_v
-        self.decel_t = decel_d / ((end_v + cruise_v) * 0.5)
+        self.decel_t = decel_d / ((end_v + cruise_v) * 0.5)        
+        self._respond_info(format_section("Move: set_junction()", str(self)))
 
 LOOKAHEAD_FLUSH_TIME = 0.250
 
 # Class to track a list of pending move requests and to facilitate
 # "look-ahead" across moves to reduce acceleration between moves.
 class MoveQueue:
-    def __init__(self, toolhead):
+    def __init__(self, toolhead, respond_info):
         self.toolhead = toolhead
         self.queue = []
         self.junction_flush = LOOKAHEAD_FLUSH_TIME
+        self._respond_info = respond_info
     def reset(self):
         del self.queue[:]
         self.junction_flush = LOOKAHEAD_FLUSH_TIME
@@ -126,6 +158,7 @@ class MoveQueue:
             return self.queue[-1]
         return None
     def flush(self, lazy=False):
+        self._respond_info("MoveQueue: flush()")
         self.junction_flush = LOOKAHEAD_FLUSH_TIME
         update_flush_count = lazy
         queue = self.queue
@@ -141,6 +174,18 @@ class MoveQueue:
             start_v2 = min(move.max_start_v2, reachable_start_v2)
             reachable_smoothed_v2 = next_smoothed_v2 + move.smooth_delta_v2
             smoothed_v2 = min(move.max_smoothed_v2, reachable_smoothed_v2)
+            variables = (("next_end_v2", next_end_v2),
+                         ("next_smoothed_v2", next_smoothed_v2),
+                         ("peak_cruise_v2", peak_cruise_v2),
+                         ("reachable_start_v2", reachable_start_v2),
+                         ("start_v2", start_v2),
+                         ("reachable_smoothed_v2", reachable_smoothed_v2),
+                         ("smoothed_v2", smoothed_v2))
+            self._respond_info(
+                indent(
+                    format_section(
+                        "step",
+                        format_columns("   |   ", format_key_value_list(variables), str(move)))))
             if smoothed_v2 < reachable_smoothed_v2:
                 # It's possible for this move to accelerate
                 if (smoothed_v2 + move.smooth_delta_v2 > next_smoothed_v2
@@ -207,7 +252,8 @@ class ToolHead:
         self.can_pause = True
         if self.mcu.is_fileoutput():
             self.can_pause = False
-        self.move_queue = MoveQueue(self)
+        self._respond_info = self.printer.lookup_object('gcode').respond_info
+        self.move_queue = MoveQueue(self, self._respond_info)
         self.commanded_pos = [0., 0., 0., 0.]
         self.printer.register_event_handler("klippy:shutdown",
                                             self._handle_shutdown)
@@ -306,6 +352,7 @@ class ToolHead:
             self.printer.send_event("toolhead:sync_print_time",
                                     curtime, est_print_time, self.print_time)
     def _process_moves(self, moves):
+        self._respond_info("toolhead._process_moves()")
         # Resync print_time if necessary
         if self.special_queuing_state:
             if self.special_queuing_state != "Drip":
@@ -318,11 +365,15 @@ class ToolHead:
         next_move_time = self.print_time
         for move in moves:
             if move.is_kinematic_move:
+                self._respond_info(indent(format_section(
+                    "appending to trapq (next move time: %s)" % next_move_time,
+                    str(move))))
                 self.trapq_append(
                     self.trapq, next_move_time,
-                    move.accel_t, move.cruise_t, move.backlash_t, move.decel_t,
+                    move.accel_t, move.cruise_t, move.decel_t,
                     move.start_pos[0], move.start_pos[1], move.start_pos[2],
                     move.axes_r[0], move.axes_r[1], move.axes_r[2],
+                    move.backlash_axes_d[0], move.backlash_axes_d[1], move.backlash_axes_d[2],
                     move.start_v, move.cruise_v, move.accel)
             if move.axes_d[3]:
                 self.extruder.move(next_move_time, move)
@@ -403,6 +454,10 @@ class ToolHead:
     def get_position(self):
         return list(self.commanded_pos)
     def set_position(self, newpos, homing_axes=()):
+        self._respond_info(
+            format_section(
+                "ToolHead.set_position()",
+                format_columns(" | ", format_value_change(self.commanded_pos, newpos), format_stack())))
         self.flush_step_generation()
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.trapq_set_position(self.trapq, self.print_time,
@@ -411,6 +466,12 @@ class ToolHead:
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
     def move(self, newpos, speed):
+        self._respond_info(
+            format_section(
+                "BEGIN: ToolHead.move()",
+                format_key_value_list((
+                    ("self.commanded_pos", self.commanded_pos),
+                    ("newpos", newpos)))))
         move = self._create_move(newpos, speed)
         if not move.move_d:
             return
@@ -422,20 +483,26 @@ class ToolHead:
         self.move_queue.add_move(move)
         if self.print_time > self.need_check_stall:
             self._check_stall()
+        self._respond_info(
+            format_section(
+                "END: ToolHead.move()",
+                format_key_value_list((
+                    ("self.commanded_pos", self.commanded_pos),
+                    ("move", str(move))))))
     def _create_move(self, newpos, speed):
         backlash_settings = [0., 0., 0.]
-        backlash_axes_d = [0., 0., 0.]
         new_dir = [0. if start == end else 1. if start < end else -1
                    for start, end
                    in zip(self.commanded_pos[:3], newpos[:3])]
-        if any(new_dir):
-            backlash_axes_d = [new_d * setting if new_d != 0. and new_d != last_d else 0.
-                               for new_d, last_d, setting
-                               in zip(new_dir, self.last_dir, backlash_settings)]
-            self.last_dir = [new_d if new_d != 0 else last_d
-                             for new_d, last_d
-                             in zip(new_dir, self.last_dir)]
-        return Move(self, self.commanded_pos, newpos, backlash_axes_d, speed)
+        backlash_axes_d = [new_d * setting if new_d != 0. and last_d != 0 and new_d != last_d else 0.
+                           for new_d, last_d, setting
+                           in zip(new_dir, self.last_dir, backlash_settings)]
+        self.last_dir = [new_d if new_d != 0 else last_d
+                         for new_d, last_d
+                         in zip(new_dir, self.last_dir)]
+        move = Move(self, self.commanded_pos, newpos, backlash_axes_d, speed, self._respond_info)
+        self._respond_info(format_section("ToolHead._create_move()", str(move)))
+        return move
     def manual_move(self, coord, speed):
         curpos = list(self.commanded_pos)
         for i in range(len(coord)):
@@ -611,6 +678,66 @@ class ToolHead:
             accel = min(p, t)
         self.max_accel = accel
         self._calc_junction_deviation()
+
+
+def format_stack():
+    return "".join(traceback.format_stack())
+
+
+def format_value_change(old_value, new_value):
+    return "%s -> %s" % (format_value(old_value), format_value(new_value))
+
+
+def format_key_value_list(key_value_list):
+    return format_columns(" : ",
+                          "\n".join([str(key) for key, _ in key_value_list]),
+                          "\n".join([format_value(value) for _, value in key_value_list]))
+
+
+def format_section(title, content):
+    return "%s:\n%s" % (title, indent(content))
+
+
+def format_columns(col_separator="", *cols):
+    max_col_lines = max([len(col.splitlines()) for col in cols])
+    cols = list([col + "\n" * (max_col_lines - len(col.splitlines()) + 1) for col in cols])
+    separator_cols = list(itertools.repeat((col_separator + "\n") * max_col_lines, len(cols) - 1))
+    separated_cols = cols + separator_cols
+    separated_cols[::2] = cols
+    separated_cols[1::2] = separator_cols
+    return append_lines_left_to_right(*[columnize(col, str.ljust) for col in separated_cols])
+
+
+def columnize(string, just):
+    max_line_length = max([len(line) for line in string.splitlines()])
+    return "\n".join(just(line, max_line_length) for line in string.splitlines())
+
+
+def append_lines_left_to_right(*texts):
+    return "\n".join(["".join(lines)
+                      for lines
+                      in itertools.izip_longest(*[text.splitlines()
+                                                  for text
+                                                  in texts],
+                                                fillvalue="")])
+
+
+def indent(string):
+    return "\n".join(["\t%s" % line for line in string.splitlines()])
+
+
+def format_value(value):
+    format_functions = {
+        int: lambda: "{:+.3f}".format(value),
+        float: lambda: "{:+.3f}".format(value),
+        list: lambda: "[%s]" % ", ".join(map(format_value, value)),
+        tuple: lambda: "(%s)" % ", ".join(map(format_value, value)),
+    }
+    if format_functions.__contains__(type(value)):
+        return format_functions[type(value)]()
+    else:
+        return str(value)
+
 
 def add_printer_objects(config):
     config.get_printer().add_object('toolhead', ToolHead(config))

@@ -13,9 +13,9 @@ struct coord {
 };
 
 struct move {
-    double print_time, move_t, backlash_t;
+    double print_time, move_t;
     double start_v, half_accel;
-    struct coord start_pos, axes_r;
+    struct coord start_pos, axes_r, backlash_axes;
 
     struct list_node node;
 };
@@ -33,11 +33,13 @@ struct pull_move {
 
 struct move *move_alloc(void);
 void trapq_append(struct trapq *tq, double print_time
-                  , double accel_t, double cruise_t, double backlash_t, double decel_t
+                  , double accel_t, double cruise_t, double decel_t
                   , double start_pos_x, double start_pos_y, double start_pos_z
                   , double axes_r_x, double axes_r_y, double axes_r_z
+                  , double backlash_axes_x, double backlash_axes_y, double backlash_axes_z
                   , double start_v, double cruise_v, double accel);
 double move_get_distance(struct move *m, double move_time);
+struct coord move_get_coord_by_dist(struct move *m, double dist);
 struct coord move_get_coord(struct move *m, double move_time);
 struct trapq *trapq_alloc(void);
 void trapq_free(struct trapq *tq);

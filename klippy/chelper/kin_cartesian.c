@@ -13,24 +13,32 @@
 #include "trapq.h" // move_get_coord
 
 static double
+cart_stepper_calc_position(struct stepper_kinematics *sk, struct move *m, const double move_time, const char axis)
+{
+    const double move_dist_axis = move_get_distance(m, move_time) * m->axes_r.axis[axis - 'x'];
+    const double effective_move_dist_axis = fmax(move_dist_axis - m->backlash_axes.axis[axis - 'x'], .0);
+    return move_get_coord_by_dist(m, effective_move_dist_axis).axis[axis - 'x'];
+}
+
+static double
 cart_stepper_x_calc_position(struct stepper_kinematics *sk, struct move *m
                              , double move_time)
 {
-    return move_get_coord(m, fmax(move_time - m->backlash_t, 0)).x;
+    return cart_stepper_calc_position(sk, m, move_time, 'x');
 }
 
 static double
 cart_stepper_y_calc_position(struct stepper_kinematics *sk, struct move *m
                              , double move_time)
 {
-    return move_get_coord(m, fmax(move_time - m->backlash_t, 0)).y;
+    return cart_stepper_calc_position(sk, m, move_time, 'y');
 }
 
 static double
 cart_stepper_z_calc_position(struct stepper_kinematics *sk, struct move *m
                              , double move_time)
 {
-    return move_get_coord(m, fmax(move_time - m->backlash_t, 0)).z;
+    return cart_stepper_calc_position(sk, m, move_time, 'z');
 }
 
 struct stepper_kinematics * __visible
@@ -55,21 +63,21 @@ static double
 cart_reverse_stepper_x_calc_position(struct stepper_kinematics *sk
                              , struct move *m, double move_time)
 {
-    return -move_get_coord(m, fmax(move_time - m->backlash_t, 0)).x;
+    return -cart_stepper_calc_position(sk, m, move_time, 'x');
 }
 
 static double
 cart_reverse_stepper_y_calc_position(struct stepper_kinematics *sk
                              , struct move *m, double move_time)
 {
-    return -move_get_coord(m, fmax(move_time - m->backlash_t, 0)).y;
+    return -cart_stepper_calc_position(sk, m, move_time, 'y');
 }
 
 static double
 cart_reverse_stepper_z_calc_position(struct stepper_kinematics *sk
                              , struct move *m, double move_time)
 {
-    return -move_get_coord(m, fmax(move_time - m->backlash_t, 0)).z;
+    return -cart_stepper_calc_position(sk, m, move_time, 'z');
 }
 
 struct stepper_kinematics * __visible
