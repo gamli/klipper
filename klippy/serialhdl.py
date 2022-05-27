@@ -6,7 +6,16 @@
 import logging, threading, os
 import serial
 
-import msgproto, chelper, util
+import msgproto, chelper
+
+import os
+if os.name == "nt":
+    class util:
+        def clear_hupcl(self, fileno):
+            return
+else:
+    import util
+
 
 class error(Exception):
     pass
