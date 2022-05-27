@@ -39,7 +39,8 @@ void trapq_append(struct trapq *tq, double print_time
                   , double backlash_axes_x, double backlash_axes_y, double backlash_axes_z
                   , double start_v, double cruise_v, double accel);
 double move_get_distance(struct move *m, double move_time);
-struct coord move_get_coord_by_dist(struct move *m, double dist);
+struct coord move_get_distance_per_axis(struct move *m, double move_time);
+struct coord move_get_coord_by_distance_per_axis(struct move *m, struct coord distance_per_axis);
 struct coord move_get_coord(struct move *m, double move_time);
 struct trapq *trapq_alloc(void);
 void trapq_free(struct trapq *tq);

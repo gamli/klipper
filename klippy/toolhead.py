@@ -490,11 +490,11 @@ class ToolHead:
                     ("self.commanded_pos", self.commanded_pos),
                     ("move", str(move))))))
     def _create_move(self, newpos, speed):
-        backlash_settings = [0., 0., 0.]
+        backlash_settings = [.3, 0., 0.]
         new_dir = [0. if start == end else 1. if start < end else -1
                    for start, end
                    in zip(self.commanded_pos[:3], newpos[:3])]
-        backlash_axes_d = [new_d * setting if new_d != 0. and last_d != 0 and new_d != last_d else 0.
+        backlash_axes_d = [-new_d * setting if new_d != 0. and last_d != 0 and new_d != last_d else 0.
                            for new_d, last_d, setting
                            in zip(new_dir, self.last_dir, backlash_settings)]
         self.last_dir = [new_d if new_d != 0 else last_d

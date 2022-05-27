@@ -15,10 +15,15 @@
 static double
 cart_stepper_calc_position(struct stepper_kinematics *sk, struct move *m, const double move_time, const char axis)
 {
-    return move_get_coord(m, move_time).axis[axis - 'x'];
-    const double move_dist_axis = move_get_distance(m, move_time) * m->axes_r.axis[axis - 'x'];
-    const double effective_move_dist_axis = fmax(move_dist_axis - m->backlash_axes.axis[axis - 'x'], .0);
-    return move_get_coord_by_dist(m, effective_move_dist_axis).axis[axis - 'x'];
+    const double move_dist_axis = move_get_distance_per_axis(m, move_time).axis[axis - 'x'];    
+    const double backlash_axis = m->backlash_axes.axis[axis - 'x'];
+
+    const double effective_move_dist_axis =
+        fabs(move_dist_axis) < fabs(backlash_axis)
+            ? .0
+            : move_dist_axis + backlash_axis;
+    
+    return m->start_pos.axis[axis - 'x'] + effective_move_dist_axis;
 }
 
 static double

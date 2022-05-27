@@ -90,22 +90,33 @@ move_get_distance(struct move *m, double move_time)
     return (m->start_v + m->half_accel * move_time) * move_time;
 }
 
+// Return the distance moved per axis given a time in a move
+inline struct coord
+move_get_distance_per_axis(struct move *m, double move_time)
+{
+    const double move_dist = move_get_distance(m, move_time);
+    return (struct coord) {
+        .x = m->axes_r.x * move_dist,
+        .y = m->axes_r.y * move_dist,
+        .z = m->axes_r.z * move_dist };
+}
+
 // Return the XYZ coordinates given a time in a move given a move distance
 inline struct coord
-move_get_coord_by_dist(struct move *m, double move_dist)
+move_get_coord_by_distance_per_axis(struct move *m, struct coord distance_per_axis)
 {
     return (struct coord) {
-        .x = m->start_pos.x + m->axes_r.x * move_dist,
-        .y = m->start_pos.y + m->axes_r.y * move_dist,
-        .z = m->start_pos.z + m->axes_r.z * move_dist };
+        .x = m->start_pos.x + distance_per_axis.x,
+        .y = m->start_pos.y + distance_per_axis.y,
+        .z = m->start_pos.z + distance_per_axis.z };
 }
 
 // Return the XYZ coordinates given a time in a move given a move time
 inline struct coord
 move_get_coord(struct move *m, double move_time)
 {
-    const double move_dist = move_get_distance(m, move_time);
-    return move_get_coord_by_dist(m, move_dist);
+    const struct coord move_distance_per_axis = move_get_distance_per_axis(m, move_time);
+    return move_get_coord_by_distance_per_axis(m, move_distance_per_axis);
 }
 
 #define NEVER_TIME 9999999999999999.9
