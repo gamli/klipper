@@ -3,7 +3,10 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import itertools
 import os, logging
+import traceback
+
 import cffi
 
 
@@ -89,7 +92,8 @@ defs_trapq = """
         , double accel_t, double cruise_t, double decel_t
         , double start_pos_x, double start_pos_y, double start_pos_z
         , double axes_r_x, double axes_r_y, double axes_r_z
-        , double start_v, double cruise_v, double accel);
+        , double start_v, double cruise_v, double accel
+        , bool is_backlash_compensation_move);
     struct trapq *trapq_alloc(void);
     void trapq_free(struct trapq *tq);
     void trapq_finalize_moves(struct trapq *tq, double print_time);
@@ -251,7 +255,7 @@ pyhelper_logging_callback = None
 
 # Hepler invoked from C errorf() code to log errors
 def logging_callback(msg):
-    logging.error(FFI_main.string(msg))
+    logging.error(format_section("Error in C function", format_columns(" # ", FFI_main.string(msg), format_stack())))
 
 # Return the Foreign Function Interface api to the caller
 def get_ffi():
@@ -298,6 +302,66 @@ def run_hub_ctrl(enable_power):
         logging.info("Building C code module %s", HC_TARGET)
         do_build_code(HC_COMPILE_CMD % (destlib, ' '.join(srcfiles)))
     os.system(HC_CMD % (hubdir, enable_power))
+
+
+
+def format_stack():
+    return "".join(traceback.format_stack())
+
+
+def format_value_change(old_value, new_value):
+    return "%s -> %s" % (format_value(old_value), format_value(new_value))
+
+
+def format_key_value_list(key_value_list):
+    return format_columns(" : ",
+                          "\n".join([str(key) for key, _ in key_value_list]),
+                          "\n".join([format_value(value) for _, value in key_value_list]))
+
+
+def format_section(title, content):
+    return "%s:\n%s" % (title, indent(content))
+
+
+def format_columns(col_separator="", *cols):
+    max_col_lines = max([len(col.splitlines()) for col in cols])
+    cols = list([col + "\n" * (max_col_lines - len(col.splitlines()) + 1) for col in cols])
+    separator_cols = list(itertools.repeat((col_separator + "\n") * max_col_lines, len(cols) - 1))
+    separated_cols = cols + separator_cols
+    separated_cols[::2] = cols
+    separated_cols[1::2] = separator_cols
+    return append_lines_left_to_right(*[columnize(col, str.ljust) for col in separated_cols])
+
+
+def columnize(string, just):
+    max_line_length = max([len(line) for line in string.splitlines()])
+    return "\n".join(just(line, max_line_length) for line in string.splitlines())
+
+
+def append_lines_left_to_right(*texts):
+    return "\n".join(["".join(lines)
+                      for lines
+                      in itertools.izip_longest(*[text.splitlines()
+                                                  for text
+                                                  in texts],
+                                                fillvalue="")])
+
+
+def indent(string):
+    return "\n".join(["    %s" % line for line in string.splitlines()])
+
+
+def format_value(value):
+    format_functions = {
+        int: lambda: "{:+.3f}".format(value),
+        float: lambda: "{:+.3f}".format(value),
+        list: lambda: "[%s]" % ", ".join(map(format_value, value)),
+        tuple: lambda: "(%s)" % ", ".join(map(format_value, value)),
+    }
+    if format_functions.__contains__(type(value)):
+        return format_functions[type(value)]()
+    else:
+        return str(value)
 
 
 if __name__ == '__main__':

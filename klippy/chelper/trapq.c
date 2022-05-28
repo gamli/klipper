@@ -26,7 +26,8 @@ trapq_append(struct trapq *tq, double print_time
              , double accel_t, double cruise_t, double decel_t
              , double start_pos_x, double start_pos_y, double start_pos_z
              , double axes_r_x, double axes_r_y, double axes_r_z
-             , double start_v, double cruise_v, double accel)
+             , double start_v, double cruise_v, double accel
+             , bool is_backlash_compensation_move)
 {
     struct coord start_pos = { .x=start_pos_x, .y=start_pos_y, .z=start_pos_z };
     struct coord axes_r = { .x=axes_r_x, .y=axes_r_y, .z=axes_r_z };
@@ -38,10 +39,14 @@ trapq_append(struct trapq *tq, double print_time
         m->half_accel = .5 * accel;
         m->start_pos = start_pos;
         m->axes_r = axes_r;
+        m->is_backlash_compensation_move = is_backlash_compensation_move;
         trapq_add_move(tq, m);
 
         print_time += accel_t;
-        start_pos = move_get_coord(m, accel_t);
+        if(!is_backlash_compensation_move)
+        {
+            start_pos = move_get_coord(m, accel_t);
+        }
     }
     if (cruise_t) {
         struct move *m = move_alloc();
@@ -51,10 +56,14 @@ trapq_append(struct trapq *tq, double print_time
         m->half_accel = 0.;
         m->start_pos = start_pos;
         m->axes_r = axes_r;
+        m->is_backlash_compensation_move = is_backlash_compensation_move;
         trapq_add_move(tq, m);
 
         print_time += cruise_t;
-        start_pos = move_get_coord(m, cruise_t);
+        if(!is_backlash_compensation_move)
+        {
+            start_pos = move_get_coord(m, cruise_t);
+        }
     }
     if (decel_t) {
         struct move *m = move_alloc();
@@ -64,6 +73,7 @@ trapq_append(struct trapq *tq, double print_time
         m->half_accel = -.5 * accel;
         m->start_pos = start_pos;
         m->axes_r = axes_r;
+        m->is_backlash_compensation_move = is_backlash_compensation_move;
         trapq_add_move(tq, m);
     }
 }
@@ -251,6 +261,7 @@ trapq_extract_old(struct trapq *tq, struct pull_move *p, int max
         p->x_r = m->axes_r.x;
         p->y_r = m->axes_r.y;
         p->z_r = m->axes_r.z;
+        p->is_backlash_compensation_move = m->is_backlash_compensation_move;
         p++;
         res++;
     }

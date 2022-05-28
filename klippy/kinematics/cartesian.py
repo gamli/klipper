@@ -3,8 +3,12 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+
 import logging
 import stepper
+import traceback
+import itertools
+
 
 class CartKinematics:
     def __init__(self, toolhead, config):
@@ -45,6 +49,7 @@ class CartKinematics:
             self.printer.lookup_object('gcode').register_command(
                 'SET_DUAL_CARRIAGE', self.cmd_SET_DUAL_CARRIAGE,
                 desc=self.cmd_SET_DUAL_CARRIAGE_help)
+        self._respond_info = self.printer.lookup_object('gcode').respond_info
     def get_steppers(self):
         rails = self.rails
         if self.dual_carriage_axis is not None:
@@ -72,6 +77,18 @@ class CartKinematics:
             forcepos[axis] -= 1.5 * (hi.position_endstop - position_min)
         else:
             forcepos[axis] += 1.5 * (position_max - hi.position_endstop)
+        self._respond_info(
+            format_section(
+                "CartKinematics._home_axis()",
+                format_columns(
+                    " | ",
+                    format_key_value_list((
+                        ("position_min", position_min),
+                        ("position_max", position_max),
+                        ("homing info", hi),
+                        ("homepos", homepos),
+                        ("forcepos", forcepos))),
+                    format_stack())))
         # Perform homing
         homing_state.home_rails([rail], forcepos, homepos)
     def home(self, homing_state):
@@ -91,6 +108,16 @@ class CartKinematics:
         self.limits = [(1.0, -1.0)] * 3
     def _check_endstops(self, move):
         end_pos = move.end_pos
+        # self._respond_info(
+        #     format_section(
+        #         "CartKinematics._check_endstops()",
+        #         format_columns(
+        #             " # ",
+        #             format_key_value_list((
+        #                 ("end_pos", end_pos),
+        #                 ("self.limits", self.limits))),
+        #             format_stack(),
+        #             str(move))))
         for i in (0, 1, 2):
             if (move.axes_d[i]
                 and (end_pos[i] < self.limits[i][0]
@@ -101,6 +128,21 @@ class CartKinematics:
     def check_move(self, move):
         limits = self.limits
         xpos, ypos = move.end_pos[:2]
+        # self._respond_info(
+        #     format_section(
+        #         "CartKinematics.check_move()",
+        #         format_columns(
+        #             " # ",
+        #             format_key_value_list((
+        #                 ("limits", limits),
+        #                 ("xpos", xpos),
+        #                 ("ypos", ypos),
+        #                 ("x min", limits[0][0]),
+        #                 ("x max", limits[0][1]),
+        #                 ("y min", limits[1][0]),
+        #                 ("y max", limits[1][1]))),
+        #             format_stack(),
+        #             str(move))))
         if (xpos < limits[0][0] or xpos > limits[0][1]
             or ypos < limits[1][0] or ypos > limits[1][1]):
             self._check_endstops(move)
@@ -137,6 +179,66 @@ class CartKinematics:
     def cmd_SET_DUAL_CARRIAGE(self, gcmd):
         carriage = gcmd.get_int('CARRIAGE', minval=0, maxval=1)
         self._activate_carriage(carriage)
+
+
+def format_stack():
+    return "".join(traceback.format_stack())
+
+
+def format_value_change(old_value, new_value):
+    return "%s -> %s" % (format_value(old_value), format_value(new_value))
+
+
+def format_key_value_list(key_value_list):
+    return format_columns(" : ",
+                          "\n".join([str(key) for key, _ in key_value_list]),
+                          "\n".join([format_value(value) for _, value in key_value_list]))
+
+
+def format_section(title, content):
+    return "%s:\n%s" % (title, indent(content))
+
+
+def format_columns(col_separator="", *cols):
+    max_col_lines = max([len(col.splitlines()) for col in cols])
+    cols = list([col + "\n" * (max_col_lines - len(col.splitlines()) + 1) for col in cols])
+    separator_cols = list(itertools.repeat((col_separator + "\n") * max_col_lines, len(cols) - 1))
+    separated_cols = cols + separator_cols
+    separated_cols[::2] = cols
+    separated_cols[1::2] = separator_cols
+    return append_lines_left_to_right(*[columnize(col, str.ljust) for col in separated_cols])
+
+
+def columnize(string, just):
+    max_line_length = max([len(line) for line in string.splitlines()])
+    return "\n".join(just(line, max_line_length) for line in string.splitlines())
+
+
+def append_lines_left_to_right(*texts):
+    return "\n".join(["".join(lines)
+                      for lines
+                      in itertools.izip_longest(*[text.splitlines()
+                                                  for text
+                                                  in texts],
+                                                fillvalue="")])
+
+
+def indent(string):
+    return "\n".join(["    %s" % line for line in string.splitlines()])
+
+
+def format_value(value):
+    format_functions = {
+        int: lambda: "{:+.3f}".format(value),
+        float: lambda: "{:+.3f}".format(value),
+        list: lambda: "[%s]" % ", ".join(map(format_value, value)),
+        tuple: lambda: "(%s)" % ", ".join(map(format_value, value)),
+    }
+    if format_functions.__contains__(type(value)):
+        return format_functions[type(value)]()
+    else:
+        return str(value)
+
 
 def load_kinematics(toolhead, config):
     return CartKinematics(toolhead, config)

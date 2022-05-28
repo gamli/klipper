@@ -130,7 +130,7 @@ class DumpStepper:
                    % (self.mcu_stepper.get_name(),
                       self.mcu_stepper.get_mcu().get_name(), len(data)))
         for i, s in enumerate(data):
-            out.append("queue_step %d: t=%d p=%d i=%d c=%d a=%d"
+            out.append("queue_step %d: first_clock=%d start_position=%d interval=%d step_count=%d add=%d"
                        % (i, s.first_clock, s.start_position, s.interval,
                           s.step_count, s.add))
         logging.info('\n'.join(out))
@@ -192,10 +192,11 @@ class DumpTrapQ:
             return
         out = ["Dumping trapq '%s' %d moves:" % (self.name, len(data))]
         for i, m in enumerate(data):
-            out.append("move %d: pt=%.6f mt=%.6f sv=%.6f a=%.6f"
-                       " sp=(%.6f,%.6f,%.6f) ar=(%.6f,%.6f,%.6f)"
+            out.append("move %d: print_time=%.6f move_t=%.6f start_v=%.6f accel=%.6f"
+                       " start_point=(%.6f,%.6f,%.6f) axes_r=(%.6f,%.6f,%.6f)"
+                       " is_backlash_compensation_move=%s"
                        % (i, m.print_time, m.move_t, m.start_v, m.accel,
-                          m.start_x, m.start_y, m.start_z, m.x_r, m.y_r, m.z_r))
+                          m.start_x, m.start_y, m.start_z, m.x_r, m.y_r, m.z_r, m.is_backlash_compensation_move))
         logging.info('\n'.join(out))
     def get_trapq_position(self, print_time):
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -278,16 +279,16 @@ class PrinterMotionReport:
                 continue
             shutdown_time = min(shutdown_time, mcu.clock_to_print_time(sc))
             clock_100ms = mcu.seconds_to_clock(0.100)
-            start_clock = max(0, sc - clock_100ms)
-            end_clock = sc + clock_100ms
+            start_clock = max(0, sc - 10 * clock_100ms)
+            end_clock = sc + 10 * clock_100ms
             data, cdata = dstepper.get_step_queue(start_clock, end_clock)
             dstepper.log_steps(data)
         if shutdown_time >= NEVER_TIME:
             return
         # Log trapqs around time of shutdown
         for dtrapq in self.trapqs.values():
-            data, cdata = dtrapq.extract_trapq(shutdown_time - .100,
-                                               shutdown_time + .100)
+            data, cdata = dtrapq.extract_trapq(shutdown_time - 1.,
+                                               shutdown_time + 1.)
             dtrapq.log_trapq(data)
         # Log estimated toolhead position at time of shutdown
         dtrapq = self.trapqs.get('toolhead')

@@ -211,7 +211,7 @@ check_line(struct stepcompress *sc, struct step_move move)
         return 0;
     if (!move.count || (!move.interval && !move.add && move.count > 1)
         || move.interval >= 0x80000000) {
-        errorf("stepcompress o=%d i=%d c=%d a=%d: Invalid sequence"
+        errorf("stepcompress oid=%d interval=%d count=%d add=%d: Invalid sequence"
                , sc->oid, move.interval, move.count, move.add);
         return ERROR_RET;
     }
@@ -221,13 +221,13 @@ check_line(struct stepcompress *sc, struct step_move move)
         struct points point = minmax_point(sc, sc->queue_pos + i);
         p += interval;
         if (p < point.minp || p > point.maxp) {
-            errorf("stepcompress o=%d i=%d c=%d a=%d: Point %d: %d not in %d:%d"
+            errorf("stepcompress oid=%d interval=%d count=%d add=%d: Point %d: %d not in %d:%d"
                    , sc->oid, move.interval, move.count, move.add
                    , i+1, p, point.minp, point.maxp);
             return ERROR_RET;
         }
         if (interval >= 0x80000000) {
-            errorf("stepcompress o=%d i=%d c=%d a=%d:"
+            errorf("stepcompress oid=%d interval=%d count=%d add=%d:"
                    " Point %d: interval overflow %d"
                    , sc->oid, move.interval, move.count, move.add
                    , i+1, interval);

@@ -266,7 +266,8 @@ class PrinterExtruder:
                           move.accel_t, move.cruise_t, move.decel_t,
                           move.start_pos[3], 0., 0.,
                           1., can_pressure_advance, 0.,
-                          start_v, cruise_v, accel)
+                          start_v, cruise_v, accel,
+                          move.is_backlash_compensation_move)
         self.last_position = move.end_pos[3]
     def find_past_position(self, print_time):
         if self.extruder_stepper is None:

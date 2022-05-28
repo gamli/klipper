@@ -3,8 +3,11 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import itertools
 import math, logging, importlib
-import mcu, chelper, kinematics.extruder
+import traceback
+
+import chelper, kinematics.extruder
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
@@ -12,7 +15,7 @@ import mcu, chelper, kinematics.extruder
 
 # Class to track each move request
 class Move:
-    def __init__(self, toolhead, start_pos, end_pos, speed):
+    def __init__(self, toolhead, start_pos, end_pos, speed, is_backlash_compensation_move=False):
         self.toolhead = toolhead
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
@@ -20,6 +23,7 @@ class Move:
         self.timing_callbacks = []
         velocity = min(speed, toolhead.max_velocity)
         self.is_kinematic_move = True
+        self.is_backlash_compensation_move = is_backlash_compensation_move
         self.axes_d = axes_d = [end_pos[i] - start_pos[i] for i in (0, 1, 2, 3)]
         self.move_d = move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
         if move_d < .000000001:
@@ -57,6 +61,7 @@ class Move:
     def move_error(self, msg="Move out of range"):
         ep = self.end_pos
         m = "%s: %.3f %.3f %.3f [%.3f]" % (msg, ep[0], ep[1], ep[2], ep[3])
+        self.toolhead._respond_info(format_section("Move.move_error()", format_columns(" # ", m, format_stack())))
         return self.toolhead.printer.command_error(m)
     def calc_junction(self, prev_move):
         if not self.is_kinematic_move or not prev_move.is_kinematic_move:
@@ -104,6 +109,28 @@ class Move:
         self.accel_t = accel_d / ((start_v + cruise_v) * 0.5)
         self.cruise_t = cruise_d / cruise_v
         self.decel_t = decel_d / ((end_v + cruise_v) * 0.5)
+    def __str__(self):
+        if not self.is_kinematic_move:
+            return format_section("Move (extruder only)", format_key_value_list(("extrusion value", self.axes_r[3])))
+        key_values = (("start/end", format_value_change(self.start_pos[:3], self.end_pos[:3])),
+                      ("is_backlash_compensation_move", self.is_backlash_compensation_move),
+                      ("axes_d", self.axes_d),
+                      ("axes_r", self.axes_r),
+                      ("move_d", self.move_d),
+                      ("accel", self.accel),
+                      ("min_move_t", self.min_move_t),
+                      ("max_start_v2", self.max_start_v2),
+                      ("max_cruise_v2", self.max_cruise_v2),
+                      ("delta_v2", self.delta_v2),
+                      ("max_smoothed_v2", self.max_smoothed_v2),
+                      ("smooth_delta_v2", self.smooth_delta_v2),
+                      ("start_v", self.start_v if hasattr(self, "start_v") else "N/A"),
+                      ("cruise_v", self.cruise_v if hasattr(self, "cruise_v") else "N/A"),
+                      ("end_v", self.end_v if hasattr(self, "end_v") else "N/A"),
+                      ("accel_t", self.accel_t if hasattr(self, "accel_t") else "N/A"),
+                      ("cruise_t", self.cruise_t if hasattr(self, "cruise_t") else "N/A"),
+                      ("decel_t", self.decel_t if hasattr(self, "decel_t") else "N/A"),)
+        return format_section("Move", format_key_value_list(key_values))
 
 LOOKAHEAD_FLUSH_TIME = 0.250
 
@@ -262,6 +289,9 @@ class ToolHead:
             msg = "Error loading kinematics '%s'" % (kin_name,)
             logging.exception(msg)
             raise config.error(msg)
+        # setup backlash compensation
+        self.backlash_settings = [.3, 0., 0., 0.]
+        self.last_dir = [0, 0, 0, 0.]
         # Register commands
         gcode.register_command('G4', self.cmd_G4)
         gcode.register_command('M400', self.cmd_M400)
@@ -274,6 +304,8 @@ class ToolHead:
                    "manual_probe", "tuning_tower"]
         for module_name in modules:
             self.printer.load_object(config, module_name)
+        self._gcode = self.printer.lookup_object('gcode')
+        self._respond_info = self._gcode.respond_info
     # Print time tracking
     def _update_move_time(self, next_print_time):
         batch_time = MOVE_BATCH_TIME
@@ -303,6 +335,7 @@ class ToolHead:
             self.printer.send_event("toolhead:sync_print_time",
                                     curtime, est_print_time, self.print_time)
     def _process_moves(self, moves):
+        debug_moves = []
         # Resync print_time if necessary
         if self.special_queuing_state:
             if self.special_queuing_state != "Drip":
@@ -314,19 +347,22 @@ class ToolHead:
         # Queue moves into trapezoid motion queue (trapq)
         next_move_time = self.print_time
         for move in moves:
+            debug_moves.append(str(move))
             if move.is_kinematic_move:
                 self.trapq_append(
                     self.trapq, next_move_time,
                     move.accel_t, move.cruise_t, move.decel_t,
                     move.start_pos[0], move.start_pos[1], move.start_pos[2],
                     move.axes_r[0], move.axes_r[1], move.axes_r[2],
-                    move.start_v, move.cruise_v, move.accel)
+                    move.start_v, move.cruise_v, move.accel,
+                    move.is_backlash_compensation_move)
             if move.axes_d[3]:
                 self.extruder.move(next_move_time, move)
             next_move_time = (next_move_time + move.accel_t
                               + move.cruise_t + move.decel_t)
             for cb in move.timing_callbacks:
                 cb(next_move_time)
+        self._respond_info(format_section("ToolHead._process_moves()", format_columns(" ## ", *debug_moves)))
         # Generate steps for moves
         if self.special_queuing_state:
             self._update_drip_move_time(next_move_time)
@@ -396,10 +432,21 @@ class ToolHead:
             logging.exception("Exception in flush_handler")
             self.printer.invoke_shutdown("Exception in flush_handler")
         return self.reactor.NEVER
+
     # Movement commands
     def get_position(self):
         return list(self.commanded_pos)
+
     def set_position(self, newpos, homing_axes=()):
+        self._respond_info(
+            format_section(
+                "set_position()",
+                format_columns(
+                    " | ",
+                    format_key_value_list((
+                        ("from -> to", format_value_change(self.commanded_pos, newpos)),
+                        ("homing_axes", homing_axes))),
+                    format_stack())))
         self.flush_step_generation()
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.trapq_set_position(self.trapq, self.print_time,
@@ -407,18 +454,64 @@ class ToolHead:
         self.commanded_pos[:] = newpos
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
+
     def move(self, newpos, speed):
+        debug_general = format_section(
+            "parameters",
+            format_key_value_list((
+                ("from -> to", format_value_change(self.commanded_pos, newpos)),
+                ("speed", speed))))
+        moves = []
+        debug_backlash = "NO BACKLASH"
+        new_dir = [0. if start == end else 1. if start < end else -1
+                   for start, end
+                   in zip(self.commanded_pos, newpos)]
+        if any(new_dir):
+            backlash_axes = [new_d * setting if new_d != 0. and new_d != last_d else 0.
+                             for new_d, last_d, setting
+                             in zip(new_dir, self.last_dir, self.backlash_settings)]
+            if any(backlash_axes):
+                backlash_target_pos = [start + direction for start, direction in zip(self.commanded_pos, backlash_axes)]
+                compensation_move = Move(self, self.commanded_pos, backlash_target_pos, speed, True)
+                try:
+                    self.kin.check_move(compensation_move)
+                    moves.append(compensation_move)
+                except:
+                    self._respond_info(
+                        format_section("WARNING: invalid backlash compensation move", str(compensation_move)))
+                debug_backlash = \
+                    format_section(
+                        "Compensating Backlash",
+                        format_columns(
+                            " | ",
+                            format_key_value_list((
+                                ("last_dir", self.last_dir),
+                                ("new_dir", new_dir),
+                                ("backlash_axes", backlash_axes),
+                                ("from -> to", format_value_change(self.commanded_pos, backlash_target_pos)))),
+                            str(compensation_move)))
+            self.last_dir = [new_d if new_d != 0 else last_d
+                             for new_d, last_d
+                             in zip(new_dir, self.last_dir)]
         move = Move(self, self.commanded_pos, newpos, speed)
-        if not move.move_d:
-            return
-        if move.is_kinematic_move:
-            self.kin.check_move(move)
-        if move.axes_d[3]:
-            self.extruder.check_move(move)
-        self.commanded_pos[:] = move.end_pos
-        self.move_queue.add_move(move)
-        if self.print_time > self.need_check_stall:
-            self._check_stall()
+        moves.append(move)
+        debug_move = format_section("Normal Move", str(move))
+        self._respond_info(
+            format_section(
+                "ToolHead.Move()",
+                format_columns(" # ", debug_general, debug_backlash, debug_move)))
+        for move in moves:
+            if not move.move_d:
+                return
+            if move.is_kinematic_move:
+                self.kin.check_move(move)
+            if move.axes_d[3]:
+                self.extruder.check_move(move)
+            self.commanded_pos[:] = move.end_pos
+            self.move_queue.add_move(move)
+            if self.print_time > self.need_check_stall:
+                self._check_stall()
+
     def manual_move(self, coord, speed):
         curpos = list(self.commanded_pos)
         for i in range(len(coord)):
@@ -594,6 +687,66 @@ class ToolHead:
             accel = min(p, t)
         self.max_accel = accel
         self._calc_junction_deviation()
+
+
+def format_stack():
+    return "".join(traceback.format_stack())
+
+
+def format_value_change(old_value, new_value):
+    return "%s -> %s" % (format_value(old_value), format_value(new_value))
+
+
+def format_key_value_list(key_value_list):
+    return format_columns(" : ",
+                          "\n".join([str(key) for key, _ in key_value_list]),
+                          "\n".join([format_value(value) for _, value in key_value_list]))
+
+
+def format_section(title, content):
+    return "%s:\n%s" % (title, indent(content))
+
+
+def format_columns(col_separator="", *cols):
+    max_col_lines = max([len(col.splitlines()) for col in cols])
+    cols = list([col + "\n" * (max_col_lines - len(col.splitlines()) + 1) for col in cols])
+    separator_cols = list(itertools.repeat((col_separator + "\n") * max_col_lines, len(cols) - 1))
+    separated_cols = cols + separator_cols
+    separated_cols[::2] = cols
+    separated_cols[1::2] = separator_cols
+    return append_lines_left_to_right(*[columnize(col, str.ljust) for col in separated_cols])
+
+
+def columnize(string, just):
+    max_line_length = max([len(line) for line in string.splitlines()])
+    return "\n".join(just(line, max_line_length) for line in string.splitlines())
+
+
+def append_lines_left_to_right(*texts):
+    return "\n".join(["".join(lines)
+                      for lines
+                      in itertools.izip_longest(*[text.splitlines()
+                                                  for text
+                                                  in texts],
+                                                fillvalue="")])
+
+
+def indent(string):
+    return "\n".join(["    %s" % line for line in string.splitlines()])
+
+
+def format_value(value):
+    format_functions = {
+        int: lambda: "{:+.3f}".format(value),
+        float: lambda: "{:+.3f}".format(value),
+        list: lambda: "[%s]" % ", ".join(map(format_value, value)),
+        tuple: lambda: "(%s)" % ", ".join(map(format_value, value)),
+    }
+    if format_functions.__contains__(type(value)):
+        return format_functions[type(value)]()
+    else:
+        return str(value)
+
 
 def add_printer_objects(config):
     config.get_printer().add_object('toolhead', ToolHead(config))

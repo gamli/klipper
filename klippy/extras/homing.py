@@ -3,7 +3,9 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import itertools
 import logging, math
+import traceback
 
 HOMING_START_DELAY = 0.001
 ENDSTOP_SAMPLE_TIME = .000015
@@ -153,6 +155,7 @@ class Homing:
         self.changed_axes = []
         self.trigger_mcu_pos = {}
         self.adjust_pos = {}
+        self._respond_info = self.printer.lookup_object('gcode').respond_info
     def set_axes(self, axes):
         self.changed_axes = axes
     def get_axes(self):
@@ -177,6 +180,19 @@ class Homing:
         homing_axes = [axis for axis in range(3) if forcepos[axis] is not None]
         startpos = self._fill_coord(forcepos)
         homepos = self._fill_coord(movepos)
+        self._respond_info(
+            format_section(
+                "Homing.home_rails()",
+                format_columns(
+                    " | ",
+                    format_key_value_list((
+                        ("rails", rails),
+                        ("forcepos", forcepos),
+                        ("movepos", movepos),
+                        ("startpos", startpos),
+                        ("homepos", homepos),
+                        ("homing_axes", homing_axes))),
+                    format_stack())))
         self.toolhead.set_position(startpos, homing_axes=homing_axes)
         # Perform first home
         endstops = [es for rail in rails for es in rail.get_endstops()]
@@ -272,6 +288,66 @@ class PrinterHoming:
                     "Homing failed due to printer shutdown")
             self.printer.lookup_object('stepper_enable').motor_off()
             raise
+
+
+def format_stack():
+    return "".join(traceback.format_stack())
+
+
+def format_value_change(old_value, new_value):
+    return "%s -> %s" % (format_value(old_value), format_value(new_value))
+
+
+def format_key_value_list(key_value_list):
+    return format_columns(" : ",
+                          "\n".join([str(key) for key, _ in key_value_list]),
+                          "\n".join([format_value(value) for _, value in key_value_list]))
+
+
+def format_section(title, content):
+    return "%s:\n%s" % (title, indent(content))
+
+
+def format_columns(col_separator="", *cols):
+    max_col_lines = max([len(col.splitlines()) for col in cols])
+    cols = list([col + "\n" * (max_col_lines - len(col.splitlines()) + 1) for col in cols])
+    separator_cols = list(itertools.repeat((col_separator + "\n") * max_col_lines, len(cols) - 1))
+    separated_cols = cols + separator_cols
+    separated_cols[::2] = cols
+    separated_cols[1::2] = separator_cols
+    return append_lines_left_to_right(*[columnize(col, str.ljust) for col in separated_cols])
+
+
+def columnize(string, just):
+    max_line_length = max([len(line) for line in string.splitlines()])
+    return "\n".join(just(line, max_line_length) for line in string.splitlines())
+
+
+def append_lines_left_to_right(*texts):
+    return "\n".join(["".join(lines)
+                      for lines
+                      in itertools.izip_longest(*[text.splitlines()
+                                                  for text
+                                                  in texts],
+                                                fillvalue="")])
+
+
+def indent(string):
+    return "\n".join(["    %s" % line for line in string.splitlines()])
+
+
+def format_value(value):
+    format_functions = {
+        int: lambda: "{:+.3f}".format(value),
+        float: lambda: "{:+.3f}".format(value),
+        list: lambda: "[%s]" % ", ".join(map(format_value, value)),
+        tuple: lambda: "(%s)" % ", ".join(map(format_value, value)),
+    }
+    if format_functions.__contains__(type(value)):
+        return format_functions[type(value)]()
+    else:
+        return str(value)
+
 
 def load_config(config):
     return PrinterHoming(config)

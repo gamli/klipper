@@ -121,7 +121,10 @@ itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
             high_time = end;
         is_dir_change = have_bracket = check_oscillate = 0;
     }
-    sk->commanded_pos = target - (sdir ? half_step : -half_step);
+    if(!m->is_backlash_compensation_move)
+    {
+        sk->commanded_pos = target - (sdir ? half_step : -half_step);
+    }
     if (sk->post_cb)
         sk->post_cb(sk);
     return 0;
