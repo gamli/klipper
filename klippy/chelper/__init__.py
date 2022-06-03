@@ -16,7 +16,7 @@ import cffi
 
 GCC_CMD = "gcc"
 COMPILE_ARGS = ("-Wall -g -O2 -shared -fPIC"
-                " -flto -fwhole-program -fno-use-linker-plugin"
+                " -flto -fwhole-program -fno-use-linker-plugin -lstdc++ -std=c++17"
                 " -o %s %s")
 SSE_FLAGS = "-mfpmath=sse -msse2"
 SOURCE_FILES = [
@@ -24,12 +24,12 @@ SOURCE_FILES = [
     'pollreactor.c', 'msgblock.c', 'trdispatch.c',
     'kin_cartesian.c', 'kin_corexy.c', 'kin_corexz.c', 'kin_delta.c',
     'kin_polar.c', 'kin_rotary_delta.c', 'kin_winch.c', 'kin_extruder.c',
-    'kin_shaper.c',
+    'kin_shaper.c', 'logging.cpp',
 ]
 DEST_LIB = "c_helper.so"
 OTHER_FILES = [
     'list.h', 'serialqueue.h', 'stepcompress.h', 'itersolve.h', 'pyhelper.h',
-    'trapq.h', 'pollreactor.h', 'msgblock.h'
+    'trapq.h', 'pollreactor.h', 'msgblock.h', 'logging.h',
 ]
 
 defs_stepcompress = """

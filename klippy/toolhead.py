@@ -111,7 +111,7 @@ class Move:
         self.decel_t = decel_d / ((end_v + cruise_v) * 0.5)
     def __str__(self):
         if not self.is_kinematic_move:
-            return format_section("Move (extruder only)", format_key_value_list(("extrusion value", self.axes_r[3])))
+            return format_section("Move (extruder only)", format_key_value_list([("extrusion value", self.axes_r[3])]))
         key_values = (("start/end", format_value_change(self.start_pos[:3], self.end_pos[:3])),
                       ("is_backlash_compensation_move", self.is_backlash_compensation_move),
                       ("axes_d", self.axes_d),

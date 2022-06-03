@@ -1,0 +1,20 @@
+﻿<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="klipper test env (docker)" type="docker-deploy" factoryName="dockerfile" server-name="Docker">
+    <deployment type="dockerfile">
+      <settings>
+        <option name="containerName" value="klipper-test-env" />
+        <option name="sourceFilePath" value="docker/build/Dockerfile" />
+        <option name="volumeBindings">
+          <list>
+            <DockerVolumeBindingImpl>
+              <option name="containerPath" value="/klipper" />
+              <option name="hostPath" value="H:\Projects\klipper\" />
+            </DockerVolumeBindingImpl>
+          </list>
+        </option>
+      </settings>
+    </deployment>
+    <EXTENSION ID="com.jetbrains.rider.docker.debug" isFastModeEnabled="true" isPublishEnabled="true" />
+    <method v="2" />
+  </configuration>
+</component>
