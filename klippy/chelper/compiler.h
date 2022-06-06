@@ -11,7 +11,10 @@
 #ifndef __always_inline
 #define __always_inline inline __attribute__((always_inline))
 #endif
+
 #define __visible __attribute__((externally_visible))
+//#define __visible
+
 #define __noreturn __attribute__((noreturn))
 
 #define PACKED __attribute__((packed))

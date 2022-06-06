@@ -186,7 +186,7 @@ class Homing:
                 format_columns(
                     " | ",
                     format_key_value_list((
-                        ("rails", rails),
+                        #("rails", rails),
                         ("forcepos", forcepos),
                         ("movepos", movepos),
                         ("startpos", startpos),

@@ -24,6 +24,7 @@
 #include "pyhelper.h" // errorf
 #include "serialqueue.h" // struct queue_message
 #include "stepcompress.h" // stepcompress_alloc
+#include "logging.h"
 
 #define CHECK_LINES 1
 #define QUEUE_START_SIZE 1024
@@ -53,6 +54,11 @@ struct step_move {
     uint16_t count;
     int16_t add;
 };
+
+inline struct text log_value_step_move(struct step_move step_move)
+{
+    return log_one("{ interval=%f, count=%f, add=%f }", step_move.interval, step_move.count, step_move.add);
+}
 
 #define HISTORY_EXPIRE (30.0)
 
@@ -107,6 +113,11 @@ minmax_point(struct stepcompress *sc, uint32_t *pos)
 static struct step_move
 compress_bisect_add(struct stepcompress *sc)
 {
+
+    LOG_C_CONTEXT
+    
+    LOG_C_FUNCTION
+    
     uint32_t *qlast = sc->queue_next;
     if (qlast > sc->queue_pos + 65535)
         qlast = sc->queue_pos + 65535;
@@ -116,16 +127,49 @@ compress_bisect_add(struct stepcompress *sc)
     int32_t bestinterval = 0, bestcount = 1, bestadd = 1, bestreach = INT32_MIN;
     int32_t zerointerval = 0, zerocount = 0;
 
-    for (;;) {
+    LOG_C_FUNCTION_PARAMS    
+    LOG_C_VALUES
+    log_c_values_add_d("outer_mininterval",outer_mininterval);
+    log_c_values_add_d("outer_maxinterval",outer_maxinterval);
+    LOG_C_END
+    LOG_C_END
+
+    LOG_C_FUNCTION_BODY
+
+    LOG_C_LOOP("main loop")            
+    int32_t iteration = 0;
+    for (;;) {   
+        LOG_C_CONTEXT
+        LOG_C_LOOP_ITER(iteration)             
+        iteration++;
+
+        LOG_C_VALUES
+        log_c_values_add_d("outer_mininterval", outer_mininterval);
+        log_c_values_add_d("outer_maxinterval", outer_maxinterval);
+        log_c_values_add_d("add", add);
+        log_c_values_add_d("minadd", minadd);
+        log_c_values_add_d("maxadd", maxadd);
+        log_c_values_add_d("bestinterval", bestinterval);
+        log_c_values_add_d("bestcount", bestcount);
+        log_c_values_add_d("bestadd", bestadd);
+        log_c_values_add_d("bestreach", bestreach);
+        LOG_C_END       
+        
+        LOG_C_LOOP("inner loop") 
         // Find longest valid sequence with the given 'add'
         struct points nextpoint;
         int32_t nextmininterval = outer_mininterval;
         int32_t nextmaxinterval = outer_maxinterval, interval = nextmaxinterval;
         int32_t nextcount = 1;
+        int32_t nested_iteration = 0;
         for (;;) {
+            LOG_C_CONTEXT
+            LOG_C_LOOP_ITER(nested_iteration)
+            nested_iteration++;
             nextcount++;
             if (&sc->queue_pos[nextcount-1] >= qlast) {
                 int32_t count = nextcount - 1;
+                log_c_one("early return step_move={ interval=%f, count=%f, add=%f  }", interval, count, add);
                 return (struct step_move){ interval, count, add };
             }
             nextpoint = minmax_point(sc, sc->queue_pos + nextcount - 1);
@@ -136,9 +180,13 @@ compress_bisect_add(struct stepcompress *sc)
             if (nextmaxinterval*nextcount > nextpoint.maxp - c)
                 nextmaxinterval = idiv_down(nextpoint.maxp - c, nextcount);
             if (nextmininterval > nextmaxinterval)
+            {
+                log_c_one("nextmininterval=%f > nextmaxinterval=%f", nextmininterval, nextmaxinterval);
                 break;
-            interval = nextmaxinterval;
+            }
+            interval = nextmaxinterval;            
         }
+        LOG_C_END
 
         // Check if this is the best sequence found so far
         int32_t count = nextcount - 1, addfactor = count*(count-1)/2;
@@ -154,8 +202,11 @@ compress_bisect_add(struct stepcompress *sc)
                 zerocount = count;
             }
             if (count > 0x200)
+            {
+                log_c_one("No 'add' will improve sequence; avoid integer overflow - exit loop");
                 // No 'add' will improve sequence; avoid integer overflow
                 break;
+            }
         }
 
         // Check if a greater or lesser add could extend the sequence
@@ -189,10 +240,34 @@ compress_bisect_add(struct stepcompress *sc)
 
         // Bisect valid add range and try again with new 'add'
         if (minadd > maxadd)
+        {
+            log_c_one("minadd=%d > maxadd=%d => exit loop", minadd, maxadd);
             break;
+        }
+        log_c_one("new value: add = maxadd=%d - (maxadd=%d - minadd=%d) / 4", maxadd, maxadd, minadd);
         add = maxadd - (maxadd - minadd) / 4;
     }
-    if (zerocount + zerocount/16 >= bestcount)
+    LOG_C_END
+    
+    const bool use_zeroes = zerocount + zerocount/16 >= bestcount;
+
+    LOG_C_END
+
+    LOG_C_FUNCTION_RETURN
+    LOG_C_VALUES
+    // const char* s_not_used = "/not used";
+    // const char* s_empty = "";
+    log_c_values_add_b("use_zeroes", use_zeroes);
+    // log_c_values_add_t("bestinterval", log_one("%d%s", bestinterval, use_zeroes ? s_not_used : s_empty));
+    // log_c_values_add_t("bestcount", log_one("%d%s", bestcount, use_zeroes ? s_not_used : s_empty));
+    // log_c_values_add_t("bestadd", log_one("%d%s", bestadd, use_zeroes ? s_not_used : s_empty));
+    log_c_values_add_i("bestinterval", bestinterval);
+    log_c_values_add_i("bestcount", bestcount);
+    log_c_values_add_i("bestadd", bestadd);
+    LOG_C_END
+    LOG_C_END
+    
+    if (use_zeroes)
         // Prefer add=0 if it's similar to the best found sequence
         return (struct step_move){ zerointerval, zerocount, 0 };
     return (struct step_move){ bestinterval, bestcount, bestadd };
@@ -207,34 +282,74 @@ compress_bisect_add(struct stepcompress *sc)
 static int
 check_line(struct stepcompress *sc, struct step_move move)
 {
+    LOG_C_CONTEXT
+    
+    LOG_C_FUNCTION
+
+    LOG_C_FUNCTION_PARAMS
+    LOG_C_VALUES
+    log_c_values_add_t("step_move", log_value_step_move(move));
+    LOG_C_END // values end
+    LOG_C_END // params end
+    
     if (!CHECK_LINES)
         return 0;
+
+    LOG_C_FUNCTION_BODY
+    
     if (!move.count || (!move.interval && !move.add && move.count > 1)
         || move.interval >= 0x80000000) {
-        errorf("stepcompress oid=%d interval=%d count=%d add=%d: Invalid sequence"
+        fprintf(stderr, "stepcompress oid=%d interval=%d count=%d add=%d: Invalid sequence\n"
                , sc->oid, move.interval, move.count, move.add);
+        errorf("stepcompress oid=%d interval=%d count=%d add=%d: Invalid sequence\n"
+               , sc->oid, move.interval, move.count, move.add);
+        
+        log_c_one("stepcompress oid=%d interval=%d count=%d add=%d: Invalid sequence"
+               , sc->oid, move.interval, move.count, move.add);
+        log_c_print();
         return ERROR_RET;
     }
     uint32_t interval = move.interval, p = 0;
     uint16_t i;
+    LOG_C_LOOP("for-moves");
     for (i=0; i<move.count; i++) {
+        LOG_C_CONTEXT
+        LOG_C_LOOP_ITER(i);
+        
         struct points point = minmax_point(sc, sc->queue_pos + i);
         p += interval;
         if (p < point.minp || p > point.maxp) {
-            errorf("stepcompress oid=%d interval=%d count=%d add=%d: Point %d: %d not in %d:%d"
+            errorf("stepcompress oid=%d interval=%d count=%d add=%d: Point %d: %d not in %d:%d\n"
                    , sc->oid, move.interval, move.count, move.add
                    , i+1, p, point.minp, point.maxp);
+            
+            log_c_one("stepcompress oid=%d interval=%d count=%d add=%d: Point %d: %d not in %d:%d"
+                   , sc->oid, move.interval, move.count, move.add
+                   , i+1, p, point.minp, point.maxp);
+            log_c_print();
             return ERROR_RET;
         }
         if (interval >= 0x80000000) {
             errorf("stepcompress oid=%d interval=%d count=%d add=%d:"
+                   " Point %d: interval overflow %d\n"
+                   , sc->oid, move.interval, move.count, move.add
+                   , i+1, interval);
+            
+            log_c_one("stepcompress oid=%d interval=%d count=%d add=%d:"
                    " Point %d: interval overflow %d"
                    , sc->oid, move.interval, move.count, move.add
                    , i+1, interval);
+            log_c_print();
             return ERROR_RET;
         }
         interval += move.add;
-    }
+    }    
+    LOG_C_END // loop end
+
+    LOG_C_END // body end
+
+    LOG_C_END // function end
+    
     return 0;
 }
 
@@ -270,6 +385,9 @@ stepcompress_fill(struct stepcompress *sc, uint32_t max_error
 void __visible
 stepcompress_set_invert_sdir(struct stepcompress *sc, uint32_t invert_sdir)
 {
+    LOG_C_CONTEXT
+    LOG_C_FUNCTION
+    
     invert_sdir = !!invert_sdir;
     if (invert_sdir != sc->invert_sdir) {
         sc->invert_sdir = invert_sdir;
@@ -344,6 +462,12 @@ stepcompress_set_time(struct stepcompress *sc
 static void
 add_move(struct stepcompress *sc, uint64_t first_clock, struct step_move *move)
 {
+    LOG_C_CONTEXT
+    LOG_C_FUNCTION
+
+
+    LOG_C_FUNCTION_BODY
+    
     int32_t addfactor = move->count*(move->count-1)/2;
     uint32_t ticks = move->add*addfactor + move->interval*(move->count-1);
     uint64_t last_clock = first_clock + ticks;
@@ -353,12 +477,22 @@ add_move(struct stepcompress *sc, uint64_t first_clock, struct step_move *move)
         sc->queue_step_msgtag, sc->oid, move->interval, move->count, move->add
     };
     struct queue_message *qm = message_alloc_and_encode(msg, 5);
+
+    log_c_one("queue_message");
+    
     qm->min_clock = qm->req_clock = sc->last_step_clock;
     if (move->count == 1 && first_clock >= sc->last_step_clock + CLOCK_DIFF_MAX)
         qm->req_clock = first_clock;
+    
+    log_c_one("before list_add_tail");
+    
     list_add_tail(&qm->node, &sc->msg_queue);
+
+    log_c_one("after list_add_tail");
+    
     sc->last_step_clock = last_clock;
 
+    log_c_one("before list_add_head");
     // Create and store move in history tracking
     struct history_steps *hs = malloc(sizeof(*hs));
     hs->first_clock = first_clock;
@@ -369,16 +503,45 @@ add_move(struct stepcompress *sc, uint64_t first_clock, struct step_move *move)
     hs->step_count = sc->sdir ? move->count : -move->count;
     sc->last_position += hs->step_count;
     list_add_head(&hs->node, &sc->history_list);
+    
+    log_c_one("after list_add_head");
+
+    LOG_C_END // body
+    
+    LOG_C_END // function
 }
 
 // Convert previously scheduled steps into commands for the mcu
 static int
 queue_flush(struct stepcompress *sc, uint64_t move_clock)
 {
+    LOG_C_CONTEXT
+    LOG_C_FUNCTION
+    
     if (sc->queue_pos >= sc->queue_next)
+    {
         return 0;
+    }
+
+    LOG_C_FUNCTION_BODY
+
+    LOG_C_LOOP("main-loop");
+    int32_t iteration = 0;
     while (sc->last_step_clock < move_clock) {
+        
+        LOG_C_CONTEXT
+        LOG_C_LOOP_ITER(iteration)
+        iteration++;
+        
         struct step_move move = compress_bisect_add(sc);
+
+        log_c_one("step_move:");
+        LOG_C_VALUES
+        log_c_values_add_d("move.interval", move.interval);
+        log_c_values_add_d("move.count",  move.count);
+        log_c_values_add_d("move.add", move.add);
+        LOG_C_END
+        
         int ret = check_line(sc, move);
         if (ret)
             return ret;
@@ -391,7 +554,14 @@ queue_flush(struct stepcompress *sc, uint64_t move_clock)
         }
         sc->queue_pos += move.count;
     }
+    LOG_C_END // loop
+    
     calc_last_step_print_time(sc);
+
+    LOG_C_END // body
+    
+    LOG_C_END // function
+
     return 0;
 }
 

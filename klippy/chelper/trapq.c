@@ -11,6 +11,10 @@
 #include "compiler.h" // unlikely
 #include "trapq.h" // move_get_coord
 
+#include <stdint.h>
+
+#include "logging.h"
+
 // Allocate a new 'move' object
 struct move *
 move_alloc(void)
@@ -29,9 +33,30 @@ trapq_append(struct trapq *tq, double print_time
              , double start_v, double cruise_v, double accel
              , bool is_backlash_compensation_move)
 {
+    LOG_C_CONTEXT    
+    LOG_C_FUNCTION
+
+    LOG_C_FUNCTION_PARAMS
+    LOG_C_VALUES
+    log_c_values_add_d("print_time", print_time);
+    log_c_values_add_d("accel_t", accel_t);
+    log_c_values_add_d("cruise_t", cruise_t);
+    log_c_values_add_d("decel_t", decel_t);
+    log_c_values_add_t("start_pos", log_value_coord3(start_pos_x, start_pos_y, start_pos_z));
+    log_c_values_add_t("axes_r", log_value_coord3(axes_r_x, axes_r_y, axes_r_z));
+    log_c_values_add_b("is_backlash_compensation_move", is_backlash_compensation_move);
+    LOG_C_END
+    LOG_C_END
+
+    LOG_C_FUNCTION_BODY
+
     struct coord start_pos = { .x=start_pos_x, .y=start_pos_y, .z=start_pos_z };
     struct coord axes_r = { .x=axes_r_x, .y=axes_r_y, .z=axes_r_z };
     if (accel_t) {
+
+        LOG_C_CONTEXT  
+        LOG_C_SECTION("accel_t")
+        
         struct move *m = move_alloc();
         m->print_time = print_time;
         m->move_t = accel_t;
@@ -40,8 +65,15 @@ trapq_append(struct trapq *tq, double print_time
         m->start_pos = start_pos;
         m->axes_r = axes_r;
         m->is_backlash_compensation_move = is_backlash_compensation_move;
-        trapq_add_move(tq, m);
 
+        LOG_C_VALUES
+        log_c_values_add("move-type", "accel_t");
+        log_c_values_add_d("print_time", print_time);
+        log_c_values_add_t("start_pos", log_value_coord(start_pos));
+        LOG_C_END
+        
+        trapq_add_move(tq, m);
+        
         print_time += accel_t;
         if(!is_backlash_compensation_move)
         {
@@ -49,6 +81,10 @@ trapq_append(struct trapq *tq, double print_time
         }
     }
     if (cruise_t) {
+
+        LOG_C_CONTEXT 
+        LOG_C_SECTION("cruise_t")
+        
         struct move *m = move_alloc();
         m->print_time = print_time;
         m->move_t = cruise_t;
@@ -57,8 +93,15 @@ trapq_append(struct trapq *tq, double print_time
         m->start_pos = start_pos;
         m->axes_r = axes_r;
         m->is_backlash_compensation_move = is_backlash_compensation_move;
-        trapq_add_move(tq, m);
 
+        LOG_C_VALUES
+        log_c_values_add("move-type", "cruise_t");
+        log_c_values_add_d("print_time", print_time);
+        log_c_values_add_t("start_pos", log_value_coord(start_pos));
+        LOG_C_END
+        
+        trapq_add_move(tq, m);
+        
         print_time += cruise_t;
         if(!is_backlash_compensation_move)
         {
@@ -66,6 +109,10 @@ trapq_append(struct trapq *tq, double print_time
         }
     }
     if (decel_t) {
+
+        LOG_C_CONTEXT 
+        LOG_C_SECTION("decel_t")
+        
         struct move *m = move_alloc();
         m->print_time = print_time;
         m->move_t = decel_t;
@@ -74,8 +121,18 @@ trapq_append(struct trapq *tq, double print_time
         m->start_pos = start_pos;
         m->axes_r = axes_r;
         m->is_backlash_compensation_move = is_backlash_compensation_move;
+        
+        LOG_C_VALUES
+        log_c_values_add("move-type", "decel_t");
+        log_c_values_add_d("print_time", print_time);
+        log_c_values_add_t("start_pos", log_value_coord(start_pos));
+        LOG_C_END
+        
         trapq_add_move(tq, m);
     }
+
+    LOG_C_END // body
+    LOG_C_END // function
 }
 
 // Return the distance moved given a time in a move
@@ -134,19 +191,31 @@ trapq_free(struct trapq *tq)
 void
 trapq_check_sentinels(struct trapq *tq)
 {
+    LOG_C_CONTEXT    
+    LOG_C_FUNCTION
+
+    LOG_C_FUNCTION_BODY
+    
     struct move *tail_sentinel = list_last_entry(&tq->moves, struct move, node);
     if (tail_sentinel->print_time)
+    {
         // Already up to date
+        log_c_one("Already up to date");
         return;
+    }
     struct move *m = list_prev_entry(tail_sentinel, node);
     struct move *head_sentinel = list_first_entry(&tq->moves, struct move,node);
     if (m == head_sentinel) {
         // No moves at all on this list
         tail_sentinel->print_time = NEVER_TIME;
+        log_c_one("No moves at all on this list");
         return;
     }
     tail_sentinel->print_time = m->print_time + m->move_t;
     tail_sentinel->start_pos = move_get_coord(m, m->move_t);
+
+    LOG_C_END // body
+    LOG_C_END // funciton
 }
 
 #define MAX_NULL_MOVE 1.0
@@ -155,6 +224,17 @@ trapq_check_sentinels(struct trapq *tq)
 void
 trapq_add_move(struct trapq *tq, struct move *m)
 {
+    LOG_C_CONTEXT    
+    LOG_C_FUNCTION
+
+    LOG_C_FUNCTION_PARAMS
+    LOG_C_VALUES
+    log_c_values_add_t("move", log_value_move(m));
+    LOG_C_END
+    LOG_C_END
+
+    LOG_C_FUNCTION_BODY
+    
     struct move *tail_sentinel = list_last_entry(&tq->moves, struct move, node);
     struct move *prev = list_prev_entry(tail_sentinel, node);
     if (prev->print_time + prev->move_t < m->print_time) {
@@ -171,6 +251,9 @@ trapq_add_move(struct trapq *tq, struct move *m)
     }
     list_add_before(&m->node, &tail_sentinel->node);
     tail_sentinel->print_time = 0.;
+
+    LOG_C_END // body
+    LOG_C_END // function
 }
 
 #define HISTORY_EXPIRE (30.0)
@@ -179,10 +262,29 @@ trapq_add_move(struct trapq *tq, struct move *m)
 void __visible
 trapq_finalize_moves(struct trapq *tq, double print_time)
 {
+    LOG_C_CONTEXT    
+    LOG_C_FUNCTION
+
+    LOG_C_FUNCTION_PARAMS
+    LOG_C_VALUES
+    log_c_values_add_d("print_time", print_time);
+    LOG_C_END
+    LOG_C_END
+
+    LOG_C_FUNCTION_BODY
+    
     struct move *head_sentinel = list_first_entry(&tq->moves, struct move,node);
     struct move *tail_sentinel = list_last_entry(&tq->moves, struct move, node);
+    log_c_one("// Move expired moves from main \"moves\" list to \"history\" list");
     // Move expired moves from main "moves" list to "history" list
+    int32_t iterationFirst = 0;
+    LOG_C_LOOP("first")
     for (;;) {
+
+        LOG_C_CONTEXT
+        LOG_C_LOOP_ITER(iterationFirst)
+        iterationFirst++;
+        
         struct move *m = list_next_entry(head_sentinel, node);
         if (m == tail_sentinel) {
             tail_sentinel->print_time = NEVER_TIME;
@@ -196,18 +298,34 @@ trapq_finalize_moves(struct trapq *tq, double print_time)
         else
             free(m);
     }
+    LOG_C_END // loop
+    
     // Free old moves from history list
     if (list_empty(&tq->history))
         return;
     struct move *latest = list_first_entry(&tq->history, struct move, node);
     double expire_time = latest->print_time + latest->move_t - HISTORY_EXPIRE;
+    int32_t iterationSecond = 0;
+    LOG_C_LOOP("second")
     for (;;) {
+
+        LOG_C_CONTEXT
+        LOG_C_LOOP_ITER(iterationSecond)
+        iterationSecond++;
+        
         struct move *m = list_last_entry(&tq->history, struct move, node);
         if (m == latest || m->print_time + m->move_t > expire_time)
+        {
+            log_c_one("m == latest || m->print_time + m->move_t > expire_time");
             break;
+        }
         list_del(&m->node);
         free(m);
     }
+    LOG_C_END // loop
+
+    LOG_C_END // body
+    LOG_C_END // function
 }
 
 // Note a position change in the trapq history
@@ -215,11 +333,25 @@ void __visible
 trapq_set_position(struct trapq *tq, double print_time
                    , double pos_x, double pos_y, double pos_z)
 {
+    LOG_C_CONTEXT    
+    LOG_C_FUNCTION
+    
     // Flush all moves from trapq
+    log_c_one("Flush all moves from trapq");    
     trapq_finalize_moves(tq, NEVER_TIME);
 
+    LOG_C_FUNCTION_BODY
+
     // Prune any moves in the trapq history that were interrupted
+    log_c_one("Prune any moves in the trapq history that were interrupted");
+    LOG_C_LOOP("main");
+    int32_t iteration = 0;
     while (!list_empty(&tq->history)) {
+
+        LOG_C_CONTEXT  
+        LOG_C_LOOP_ITER(iteration)
+        iteration++;
+        
         struct move *m = list_first_entry(&tq->history, struct move, node);
         if (m->print_time < print_time) {
             if (m->print_time + m->move_t > print_time)
@@ -229,6 +361,7 @@ trapq_set_position(struct trapq *tq, double print_time
         list_del(&m->node);
         free(m);
     }
+    LOG_C_END // loop
 
     // Add a marker to the trapq history
     struct move *m = move_alloc();
@@ -237,6 +370,9 @@ trapq_set_position(struct trapq *tq, double print_time
     m->start_pos.y = pos_y;
     m->start_pos.z = pos_z;
     list_add_head(&m->node, &tq->history);
+
+    LOG_C_END // body
+    LOG_C_END // function
 }
 
 // Return history of movement queue

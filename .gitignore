@@ -4,3 +4,7 @@ out
 .config
 .config.old
 klippy/.version
+_test_*
+*.log
+**/.vscode/**
+debug.xml

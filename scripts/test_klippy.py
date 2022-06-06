@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, optparse, logging, subprocess
 
+
 TEMP_GCODE_FILE = "_test_.gcode"
 TEMP_LOG_FILE = "_test_.log"
 TEMP_OUTPUT_FILE = "_test_output"
@@ -103,7 +104,7 @@ class TestCase:
                 self.show_log()
             if should_fail:
                 raise error("Test failed to raise an error")
-            raise error("Error during test")
+            raise error("Error during test: " + str(args))
         # Do cleanup
         if self.keepfiles:
             return

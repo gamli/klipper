@@ -9,6 +9,7 @@
 #include <string.h> // memset
 #include "compiler.h" // __visible
 #include "itersolve.h" // itersolve_generate_steps
+#include "logging.h"
 #include "pyhelper.h" // errorf
 #include "stepcompress.h" // queue_append_start
 #include "trapq.h" // struct move
@@ -24,11 +25,19 @@ struct timepos {
 
 #define SEEK_TIME_RESET 0.000100
 
+inline struct text log_timepos(struct timepos tp)
+{
+    return log_one("{ time=%f, position=%f }", tp.time, tp.position);
+}
+
 // Generate step times for a portion of a move
 static int32_t
 itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
                           , double abs_start, double abs_end)
-{
+{    
+    LOG_C_CONTEXT    
+    LOG_C_FUNCTION
+    
     sk_calc_callback calc_position_cb = sk->calc_position_cb;
     double half_step = .5 * sk->step_dist;
     double start = abs_start - m->print_time, end = abs_end - m->print_time;
@@ -43,12 +52,34 @@ itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
     double last_time=start, low_time=start, high_time=start + SEEK_TIME_RESET;
     if (high_time > end)
         high_time = end;
+
+    LOG_C_FUNCTION_PARAMS
+    LOG_C_VALUES
+    log_c_values_add_t("move", log_value_move(m));
+    log_c_values_add_d("start", start);
+    log_c_values_add_d("end", end);
+    log_c_values_add_d("commanded_pos", sk->commanded_pos);
+    log_c_values_add_d("target", target);
+    log_c_values_add_t("guess", log_timepos(guess)); 
+    LOG_C_END
+    LOG_C_END
+
+    LOG_C_FUNCTION_BODY
+    
+    LOG_C_LOOP("main-loop");
+    int32_t iteration = 1;    
     for (;;) {
+        
+        LOG_C_CONTEXT   
+        LOG_C_LOOP_ITER(iteration)
+        iteration++;
+        
         // Use the "secant method" to guess a new time from previous guesses
         double guess_dist = guess.position - target;
         double og_dist = old_guess.position - target;
         double next_time = ((old_guess.time*guess_dist - guess.time*og_dist)
                             / (guess_dist - og_dist));
+        double next_time_before_fix = next_time;
         if (!(next_time > low_time && next_time < high_time)) { // or NaN
             // Next guess is outside bounds checks - validate it
             if (have_bracket) {
@@ -56,6 +87,7 @@ itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
                 next_time = (low_time + high_time) * .5;
                 check_oscillate = 0;
             } else if (guess.time >= end) {
+                log_c_one("No more steps present in requested time range");
                 // No more steps present in requested time range
                 break;
             } else {
@@ -71,20 +103,35 @@ itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
         guess.time = next_time;
         guess.position = calc_position_cb(sk, m, next_time);
         guess_dist = guess.position - target;
+
+        LOG_C_VALUES     
+        log_c_values_add_d("next_guess_dist", guess_dist);
+        log_c_values_add_d("old_guess_dist", og_dist);
+        log_c_values_add_d("next_time_before_fix", next_time_before_fix);
+        log_c_values_add_d("next_time", next_time);
+        log_c_values_add_t("next_guess", log_timepos(guess));       
+        LOG_C_END
+        
         if (fabs(guess_dist) > .000000001) {
+            log_c_one("Guess does not look close enough - update bounds");
             // Guess does not look close enough - update bounds
             double rel_dist = sdir ? guess_dist : -guess_dist;
             if (rel_dist > 0.) {
+                log_c_one("Found position past target, so step is definitely present");
                 // Found position past target, so step is definitely present
                 if (have_bracket && old_guess.time <= low_time) {
                     if (check_oscillate)
+                    {
+                        log_c_one("Force bisect next to avoid persistent oscillations");
                         // Force bisect next to avoid persistent oscillations
                         old_guess = guess;
+                    }
                     check_oscillate = 1;
                 }
                 high_time = guess.time;
                 have_bracket = 1;
             } else if (rel_dist < -(half_step + half_step + .000000010)) {
+                log_c_one("Found direction change %d -> %d", sdir, !sdir);
                 // Found direction change
                 sdir = !sdir;
                 target = (sdir ? target + half_step + half_step
@@ -94,16 +141,25 @@ itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
                 is_dir_change = have_bracket = 1;
                 check_oscillate = 0;
             } else {
+                log_c_one("low_time = guess.time???");
                 low_time = guess.time;
             }
             if (!have_bracket || high_time - low_time > .000000001) {
                 if (!is_dir_change && rel_dist >= -half_step)
+                {
+                    log_c_one("========>>>> stepcompress_commit()");
                     // Avoid rollback if stepper fully reaches step position
                     stepcompress_commit(sk->sc);
+                }
+                log_c_one("Guess is not close enough - guess again with new time");
                 // Guess is not close enough - guess again with new time
                 continue;
             }
         }
+        log_c_one(
+            "Found next step - submit it ========>>>> stepcompress_append(sdir=%d, print_time=%f, step_time=%f)",
+            sdir, m->print_time, guess.time);
+
         // Found next step - submit it
         int ret = stepcompress_append(sk->sc, sdir, m->print_time, guess.time);
         if (ret)
@@ -120,13 +176,26 @@ itersolve_gen_steps_range(struct stepper_kinematics *sk, struct move *m
         if (high_time > end)
             high_time = end;
         is_dir_change = have_bracket = check_oscillate = 0;
-    }
+    }    
+    LOG_C_END // loop
+    
     if(!m->is_backlash_compensation_move)
     {
+        log_c_one("updating commanded pos");
         sk->commanded_pos = target - (sdir ? half_step : -half_step);
     }
+    else
+    {        
+        log_c_one("skipping update of commanded pos for backlash compensation move");
+    }
+    
     if (sk->post_cb)
         sk->post_cb(sk);
+
+    LOG_C_END // body
+    
+    LOG_C_END // function
+    
     return 0;
 }
 
@@ -149,6 +218,17 @@ check_active(struct stepper_kinematics *sk, struct move *m)
 int32_t __visible
 itersolve_generate_steps(struct stepper_kinematics *sk, double flush_time)
 {
+    LOG_C_CONTEXT    
+    LOG_C_FUNCTION
+
+    LOG_C_FUNCTION_PARAMS
+    LOG_C_VALUES
+    log_c_values_add_d("flush_time", flush_time);
+    LOG_C_END
+    LOG_C_END
+
+    LOG_C_FUNCTION_BODY
+    
     double last_flush_time = sk->last_flush_time;
     sk->last_flush_time = flush_time;
     if (!sk->tq)
@@ -159,7 +239,15 @@ itersolve_generate_steps(struct stepper_kinematics *sk, double flush_time)
         m = list_next_entry(m, node);
     double force_steps_time = sk->last_move_time + sk->gen_steps_post_active;
     int skip_count = 0;
+    
+    LOG_C_LOOP("main-loop")    
+    int32_t iteration = 0;
     for (;;) {
+
+        LOG_C_CONTEXT   
+        LOG_C_LOOP_ITER(iteration)
+        iteration++;
+        
         double move_start = m->print_time, move_end = move_start + m->move_t;
         if (check_active(sk, m)) {
             if (skip_count && sk->gen_steps_pre_active) {
@@ -172,14 +260,25 @@ itersolve_generate_steps(struct stepper_kinematics *sk, double flush_time)
                 struct move *pm = list_prev_entry(m, node);
                 while (--skip_count && pm->print_time > abs_start)
                     pm = list_prev_entry(pm, node);
+                
+                LOG_C_LOOP("inner-loop");
+                int32_t inner_iteration = 0;                
                 do {
+
+                    LOG_C_CONTEXT   
+                    LOG_C_LOOP_ITER(inner_iteration);
+                    inner_iteration++;
+                    
                     int32_t ret = itersolve_gen_steps_range(sk, pm, abs_start
                                                             , flush_time);
                     if (ret)
                         return ret;
                     pm = list_next_entry(pm, node);
                 } while (pm != m);
+                LOG_C_END // do while loop
             }
+
+            log_c_one("Generate steps for this move");
             // Generate steps for this move
             int32_t ret = itersolve_gen_steps_range(sk, m, last_flush_time
                                                     , flush_time);
@@ -212,25 +311,50 @@ itersolve_generate_steps(struct stepper_kinematics *sk, double flush_time)
         }
         m = list_next_entry(m, node);
     }
+    LOG_C_END // loop
+
+    LOG_C_END // body
+    LOG_C_END // function
 }
 
 // Check if the given stepper is likely to be active in the given time range
 double __visible
 itersolve_check_active(struct stepper_kinematics *sk, double flush_time)
 {
+    LOG_C_CONTEXT    
+    LOG_C_FUNCTION
+
+    LOG_C_FUNCTION_BODY
+    
     if (!sk->tq)
         return 0.;
     trapq_check_sentinels(sk->tq);
     struct move *m = list_first_entry(&sk->tq->moves, struct move, node);
     while (sk->last_flush_time >= m->print_time + m->move_t)
         m = list_next_entry(m, node);
+    
+    LOG_C_LOOP("itersolve_check_active-loop")
+    int32_t iteration = 0;
     for (;;) {
+
+        LOG_C_CONTEXT  
+        LOG_C_LOOP_ITER(iteration);
+        iteration++;
+        
         if (check_active(sk, m))
+        {
             return m->print_time;
+        }
         if (flush_time <= m->print_time + m->move_t)
+        {
             return 0.;
+        }
         m = list_next_entry(m, node);
     }
+    LOG_C_END // loop
+
+    LOG_C_END // body
+    LOG_C_END // function
 }
 
 // Report if the given stepper is registered for the given axis
@@ -260,12 +384,24 @@ double __visible
 itersolve_calc_position_from_coord(struct stepper_kinematics *sk
                                    , double x, double y, double z)
 {
+    LOG_C_CONTEXT    
+    LOG_C_FUNCTION
+
+    LOG_C_FUNCTION_PARAMS
+    LOG_C_VALUES
+    log_c_values_add_t("coord", log_value_coord3(x, y, z));
+    LOG_C_END
+    LOG_C_END
+    
     struct move m;
     memset(&m, 0, sizeof(m));
     m.start_pos.x = x;
     m.start_pos.y = y;
     m.start_pos.z = z;
     m.move_t = 1000.;
+
+    LOG_C_END // function
+    
     return sk->calc_position_cb(sk, &m, 500.);
 }
 
@@ -273,7 +409,20 @@ void __visible
 itersolve_set_position(struct stepper_kinematics *sk
                        , double x, double y, double z)
 {
+    LOG_C_CONTEXT    
+    LOG_C_FUNCTION
+
+    LOG_C_FUNCTION_PARAMS
+    LOG_C_VALUES
+    log_c_values_add_t("position", log_value_coord3(x, y, z));
+    LOG_C_END
+    LOG_C_END
+
+    LOG_C_FUNCTION_BODY
     sk->commanded_pos = itersolve_calc_position_from_coord(sk, x, y, z);
+    LOG_C_END // body
+    
+    LOG_C_END // function
 }
 
 double __visible

@@ -2,6 +2,7 @@
   <configuration default="false" name="klipper test env (docker)" type="docker-deploy" factoryName="dockerfile" server-name="Docker">
     <deployment type="dockerfile">
       <settings>
+        <option name="command" value="" />
         <option name="containerName" value="klipper-test-env" />
         <option name="sourceFilePath" value="docker/build/Dockerfile" />
         <option name="volumeBindings">

@@ -15,7 +15,7 @@ import chelper, kinematics.extruder
 
 # Class to track each move request
 class Move:
-    def __init__(self, toolhead, start_pos, end_pos, speed, is_backlash_compensation_move=False):
+    def __init__(self, toolhead, start_pos, end_pos, speed, is_backlash_compensation_move=0):
         self.toolhead = toolhead
         self.start_pos = tuple(start_pos)
         self.end_pos = tuple(end_pos)
@@ -472,7 +472,7 @@ class ToolHead:
                              in zip(new_dir, self.last_dir, self.backlash_settings)]
             if any(backlash_axes):
                 backlash_target_pos = [start + direction for start, direction in zip(self.commanded_pos, backlash_axes)]
-                compensation_move = Move(self, self.commanded_pos, backlash_target_pos, speed, True)
+                compensation_move = Move(self, self.commanded_pos, backlash_target_pos, speed, 1)
                 try:
                     self.kin.check_move(compensation_move)
                     moves.append(compensation_move)

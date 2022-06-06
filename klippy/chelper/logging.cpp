@@ -1,5 +1,6 @@
 #include "logging.h"
 
+
 #include <algorithm>
 #include <cstdarg>
 #include <list>
@@ -9,48 +10,33 @@
 #include <functional>
 #include <iostream>
 #include <numeric>
+#include <regex>
 #include <sstream>
 #include <stack>
 #include <utility>
 
+#include "compiler.h"
+
 using namespace std;
 
-class NullBuffer final : public streambuf
-{
-public:
-    int overflow(const int c) override { return c; }
-};
+#define LOG_OSTREAM cerr
 
-class NullStream final : public ostream
-{
-public:
-    NullStream() : ostream(&_sb)
-    {
-    }
-
-private:
-    NullBuffer _sb;
-};
-
-thread_local static size_t DOUT_INDENT = 0;
-
-class DOutIndent
-{
-public:
-    DOutIndent()
-    {
-        DOUT_INDENT += 3;
-    }
-
-    ~DOutIndent()
-    {
-        DOUT_INDENT -= 3;
-    }
-};
-
-#define dout_indent const auto indent = DOutIndent();
-//#define dout cout << string(DOUT_INDENT, ' ') <<
-#define dout NullStream() <<
+thread_local string TRY_CATCH_INDENT;
+#define TRY try { TRY_CATCH_INDENT.push_back(' ');
+#define CATCH(...) \
+    TRY_CATCH_INDENT.pop_back(); \
+    } catch (exception& e) \
+    { \
+        cout << "===>>> " << e.what() << endl __VA_ARGS__; \
+        cerr << "===>>> " << e.what() << endl __VA_ARGS__; \
+        throw; \
+    } \
+    catch (...) \
+    { \
+        cout << "===>>> " << "unknown error" << endl __VA_ARGS__; \
+        cerr << "===>>> " << "unknown error" << endl __VA_ARGS__; \
+        throw; \
+    } \
 
 // utility functions ###################################################################################################
 
@@ -170,10 +156,8 @@ class OneLineText final : public Text
     string _str;
 
 public:
-    explicit OneLineText(string str) : _str(move(str))
+    explicit OneLineText(string str) : _str(std::move(str))
     {
-        dout_indent
-        dout "OneLineText::ctor(): \"" << _str << "\"" << endl;
         if (countOccurrences("\n", _str))
         {
             throw runtime_error("OneLineText must not contain new lines");
@@ -182,27 +166,30 @@ public:
 
     void format(const function<void(const string_view& str)>& accumulator) override
     {
-        dout_indent
-        dout "OneLineText::format()" << endl;
+        TRY
         accumulator(_str);
+        CATCH(<< "OneLineText::format(): " << _str)
     }
 
     Dimensions dimensions() override
     {
-        dout_indent
+        TRY
         return {1, _str.length()};
+        CATCH(<< "OneLineText::dimensions(): " << _str)
     }
 
     void lines(const function<void(const string_view& str)>& handleLine) override
     {
-        dout_indent
+        TRY
         handleLine(_str);
+        CATCH(<< "OneLineText::lines(): " << _str)
     }
 
     unique_ptr<Text> clone() override
     {
-        dout_indent
+        TRY
         return make_unique<OneLineText>(_str);
+        CATCH(<< "OneLineText::clone(): " << _str)
     }
 };
 
@@ -213,27 +200,22 @@ class MultiText final : public Text
 public:
     explicit MultiText()
     {
-        dout_indent
-        dout "MultiText::ctor() " << _texts.size() << " texts" << endl;
     }
 
     void format(const function<void(const string_view& str)>& accumulator) override
     {
-        dout_indent
-        dout "MultiText::format()" << endl;
-
+        TRY
         join(
             _texts.begin(),
             _texts.end(),
             [accumulator](const auto& text) { text->format(accumulator); },
             [accumulator](const auto&, const auto&) { accumulator("\n"); });
+        CATCH(<< "MultiText::format(): " << _texts.size() << " texts")
     }
 
     Dimensions dimensions() override
     {
-        dout_indent
-        dout "MultiText::dimensions()" << endl;
-
+        TRY
         size_t textsCols = 0, textsRows = 0;
         join(_texts.begin(), _texts.end(),
              [&textsCols, &textsRows](const auto& text)
@@ -247,52 +229,48 @@ public:
                  //textsRows++;
              });
 
-        dout "MultiText::dimensions():result " << textsRows << ", " << textsCols << endl;
 
         return {textsRows, textsCols};
+        CATCH(<< "MultiText::dimensions(): " << _texts.size() << " texts")
     }
 
     void lines(const function<void(const string_view& str)>& handleLine) override
     {
-        dout_indent
-        dout "MultiText::lines()" << endl;
-
+        TRY
         for_each(_texts.begin(), _texts.end(), [handleLine](const auto& text)
         {
             text->lines(handleLine);
         });
+        CATCH(<< "MultiText::lines(): " << _texts.size() << " texts")
     }
 
     unique_ptr<Text> clone() override
     {
-        dout_indent
-        dout "MultiText::clone()" << endl;
-
+        TRY
         auto clone = make_unique<MultiText>();
         for (const auto& text : _texts)
         {
             clone->add(text->clone());
         }
         return clone;
+        CATCH(<< "MultiText::clone(): " << _texts.size() << " texts")
     }
 
     void add(unique_ptr<Text> text)
     {
-        dout_indent
-        dout "MultiText::add(unique_ptr<Text>)" << endl;
-
-        _texts.push_back(move(text));
+        TRY
+        _texts.push_back(std::move(text));
+        CATCH(<< "MultiText::add(): " << _texts.size() << " texts")
     }
 
     void add(const MultiText* multiText)
     {
-        dout_indent
-        dout "MultiText::add(MultiText*)" << endl;
-
+        TRY
         for (const auto& text : multiText->_texts)
         {
             _texts.push_back(text->clone());
         }
+        CATCH(<< "MultiText::add(): " << _texts.size() << " texts")
     }
 };
 
@@ -302,17 +280,13 @@ class IndentedText final : public Text
     string _indent;
 
 public:
-    explicit IndentedText(unique_ptr<Text> text): _text(move(text)), _indent("   ")
+    explicit IndentedText(unique_ptr<Text> text): _text(std::move(text)), _indent("   ")
     {
-        dout_indent
-        dout "IndentedText::ctor()" << endl;
     }
 
     void format(const function<void(const string_view& str)>& accumulator) override
     {
-        dout_indent
-        dout "IndentedText::format()" << endl;
-
+        TRY
         stringstream formattedText;
         _text->format([&formattedText](auto str)
         {
@@ -320,8 +294,6 @@ public:
         });
         forEachLine(formattedText.str(), [accumulator, this](auto line, auto isLastLine)
         {
-            dout "IndentedText::format()::handleLine: indenting " << line << endl;
-
             accumulator(_indent);
             accumulator(line);
             if (!isLastLine)
@@ -329,28 +301,29 @@ public:
                 accumulator("\n");
             }
         });
+        CATCH(<< "IndentedText::format()")
     }
 
     Dimensions dimensions() override
     {
-        dout_indent
-
+        TRY
         auto textDimensions = _text->dimensions();
         return {textDimensions.Rows, textDimensions.Cols + _indent.length()};
+        CATCH(<< "IndentedText::dimensions()")
     }
 
     void lines(const function<void(const string_view& str)>& handleLine) override
     {
-        dout_indent
-
+        TRY
         _text->lines([handleLine, this](auto line) { handleLine(_indent + line.data()); });
+        CATCH(<< "IndentedText::lines()")
     }
 
     unique_ptr<Text> clone() override
     {
-        dout_indent
-
+        TRY
         return make_unique<IndentedText>(_text->clone());
+        CATCH(<< "IndentedText::clone()")
     }
 };
 
@@ -360,59 +333,40 @@ class ColumnText final : public Text
     string _separator;
 
 public:
-    ColumnText(string separator): _separator(move(separator))
+    ColumnText(string separator): _separator(std::move(separator))
     {
-        dout_indent
-        dout "ColumnText::ctor(): "
-            << _columnTexts.size()
-            << " texts separated by "
-            << _separator
-            << "\n";
     }
 
     void format(const function<void(const string_view& str)>& accumulator) override
     {
-        dout_indent
-        dout "ColumnText::format()" << endl;
-
+        TRY
         const auto dim = dimensions();
 
         list<stringstream> lines(dim.Rows);
 
-        dout "ColumnText::format()::lines = " << dim.Rows << endl;
 
         join(
             _columnTexts.begin(),
             _columnTexts.end(),
             [&lines](const auto& current) mutable
             {
-                dout_indent
-                dout "ColumnText::format()::handleElement" << endl;
-
                 auto textCols = current->dimensions().Cols;
-                dout "ColumnText::format()::handleElement: textCols=" << textCols << endl;
+
                 auto lineIter = lines.begin();
                 current->lines([&textCols, &lineIter](const auto& line) mutable
                 {
-                    dout_indent
-                    dout "ColumnText::format()::handleElement::line: " << line << endl;
                     *lineIter++ << line << string(max(static_cast<size_t>(0), textCols - line.length()), ' ');
                 });
                 while (lineIter != lines.end())
                 {
-                    dout_indent
                     *lineIter << string(textCols, ' ');
                     ++lineIter;
                 }
             },
             [&lines, this](const auto&, const auto&) mutable
             {
-                dout_indent
-                dout "ColumnText::format()::handleSeparator" << endl;
-
                 for (auto& line : lines)
                 {
-                    dout_indent
                     line << _separator;
                 }
             });
@@ -422,21 +376,18 @@ public:
             lines.end(),
             [accumulator](const auto& current)
             {
-                dout_indent
                 accumulator(current.str());
             },
             [accumulator](const auto&, const auto&)
             {
-                dout_indent
                 accumulator("\n");
             });
+        CATCH(<< "ColumnText::format(): " << _columnTexts.size() << " column texts with separator " << _separator)
     }
 
     Dimensions dimensions() override
     {
-        dout_indent
-        dout "ColumnText::dimensions()" << endl;
-
+        TRY
         size_t maxRows = 0, totalCols = 0;
 
         join(
@@ -444,38 +395,32 @@ public:
             _columnTexts.end(),
             [&maxRows, &totalCols](const auto& current) mutable
             {
-                dout_indent
                 const auto dim = current->dimensions();
-                dout "ColumnText::dimensions()::handleElement: dim = " << dim.Rows << ", " << dim.Cols << endl;
+
                 maxRows = max(maxRows, dim.Rows);
                 totalCols += dim.Cols;
             },
             [&totalCols,this](const auto&, const auto&) mutable
             {
-                dout_indent
-                dout "ColumnText::dimensions()::handleSeparator" << endl;
                 totalCols += _separator.length();
             });
 
-        dout "ColumnText::dimensions()::return " << maxRows << ", " << totalCols << endl;
+
         return {maxRows, totalCols};
+        CATCH(<< "ColumnText::dimensions(): " << _columnTexts.size() << " column texts with separator " << _separator)
     }
 
     void lines(const function<void(const string_view& str)>& handleLine) override
     {
-        dout_indent
-        dout "ColumnText::lines()" << endl;
-
+        TRY
         stringstream stream;
         format([handleLine, &stream](auto str) mutable
         {
-            dout_indent
             for (size_t i = 0; i < str.length(); i++)
             {
                 auto c = str[i];
                 if (c == '\n')
                 {
-                    dout "ColumnText::lines()::found line: " << stream.str() << endl;
                     handleLine(stream.str());
                     stream.str("");
                     stream.clear();
@@ -489,30 +434,28 @@ public:
 
         if (const auto lastLine = stream.str(); lastLine.length())
         {
-            dout "ColumnText::lines()::last line: " << stream.str() << endl;
             handleLine(lastLine);
         }
+        CATCH(<< "ColumnText::lines(): " << _columnTexts.size() << " column texts with separator " << _separator)
     }
 
     unique_ptr<Text> clone() override
     {
-        dout_indent
-        dout "ColumnText::clone()" << endl;
-
+        TRY
         auto clone = make_unique<ColumnText>(_separator);
         for (const auto& columnText : _columnTexts)
         {
             clone->add(columnText->clone());
         }
         return clone;
+        CATCH(<< "ColumnText::clone(): " << _columnTexts.size() << " column texts with separator " << _separator)
     }
 
     void add(unique_ptr<Text> text)
     {
-        dout_indent
-        dout "ColumnText::add()" << endl;
-
-        _columnTexts.push_back(move(text));
+        TRY
+        _columnTexts.push_back(std::move(text));
+        CATCH(<< "ColumnText::add(): " << _columnTexts.size() << " column texts with separator " << _separator)
     }
 };
 
@@ -523,29 +466,29 @@ class XmlText final : public Text
     unique_ptr<MultiText> _inner;
 
 public:
-    XmlText(string tag): _tag(move(tag)), _inner(new MultiText())
+    XmlText(string tag): _tag(std::move(tag)), _inner(new MultiText())
     {
-        dout_indent
-        dout "XmlText::ctor(): tag " << _tag << endl;
     }
 
     void format(const function<void(const string_view& str)>& accumulator) override
     {
-        dout_indent
-        dout "XmlText::format()" << endl;
-
+        TRY
         this->update();
 
         accumulator(_openingTag);
         _inner->format(accumulator);
         accumulator(_closingTag);
+        CATCH(<< "XmlText::format():" << endl
+            << "tag: " << _tag << endl
+            << "opening tag: " << _openingTag << endl
+            << "closing tag: " << _closingTag << endl
+            << "_attributeSeparator: |||" << _attributeSeparator << "|||" << endl
+            << debugAttrs() << endl)
     }
 
     Dimensions dimensions() override
     {
-        dout_indent
-        dout "XmlText::dimensions()" << endl;
-
+        TRY
         this->update();
 
         const auto tagRows = countRows(_openingTag) + countRows(_closingTag);
@@ -555,23 +498,33 @@ public:
             tagRows + innerDimensions.Rows,
             max(tagCols, innerDimensions.Cols + 3),
         };
+        CATCH(<< "XmlText::dimensions():" << endl
+            << "tag: " << _tag << endl
+            << "opening tag: " << _openingTag << endl
+            << "closing tag: " << _closingTag << endl
+            << "_attributeSeparator: |||" << _attributeSeparator << "|||" << endl
+            << debugAttrs() << endl)
     }
 
     void lines(const function<void(const string_view& str)>& handleLine) override
     {
-        dout_indent
-
+        TRY
         this->update();
 
         forEachLine(_openingTag, [handleLine](const auto& line, auto) { handleLine(line); });
         _inner->lines(handleLine);
         forEachLine(_closingTag, [handleLine](const auto& line, auto) { handleLine(line); });
+        CATCH(<< "XmlText::lines():" << endl
+            << "tag: " << _tag << endl
+            << "opening tag: " << _openingTag << endl
+            << "closing tag: " << _closingTag << endl
+            << "_attributeSeparator: |||" << _attributeSeparator << "|||" << endl
+            << debugAttrs() << endl)
     }
 
     unique_ptr<Text> clone() override
     {
-        dout_indent
-
+        TRY
         auto clone = make_unique<XmlText>(_tag);
         for (const auto& attr : _attrs)
         {
@@ -579,34 +532,54 @@ public:
         }
         clone->inner(_inner->clone());
         return clone;
+        CATCH(<< "XmlText::clone():" << endl
+            << "tag: " << _tag << endl
+            << "opening tag: " << _openingTag << endl
+            << "closing tag: " << _closingTag << endl
+            << "_attributeSeparator: |||" << _attributeSeparator << "|||" << endl
+            << debugAttrs() << endl)
     }
 
     void attr(const pair<string, string>& attr)
     {
-        dout_indent
-
+        TRY
         this->attr(attr.first, attr.second);
+        CATCH(<< "XmlText::attr():" << endl
+            << "tag: " << _tag << endl
+            << "opening tag: " << _openingTag << endl
+            << "closing tag: " << _closingTag << endl
+            << "_attributeSeparator: |||" << _attributeSeparator << "|||" << endl
+            << debugAttrs() << endl)
     }
 
     void attr(string name, string value)
     {
-        dout_indent
-
-        _attrs.emplace_back(move(name), move(value));
+        TRY
+        _attrs.emplace_back(std::move(name), std::move(value));
+        CATCH(<< "XmlText::attr():" << endl
+            << "tag: " << _tag << endl
+            << "opening tag: " << _openingTag << endl
+            << "closing tag: " << _closingTag << endl
+            << "_attributeSeparator: |||" << _attributeSeparator << "|||" << endl
+            << debugAttrs() << endl)
     }
 
-    void inner(unique_ptr<Text> inner) const
+    void inner(unique_ptr<Text> inner)
     {
-        dout_indent
-
-        _inner->add(make_unique<IndentedText>(move(inner)));
+        TRY
+        _inner->add(make_unique<IndentedText>(std::move(inner)));
+        CATCH(<< "XmlText::inner():" << endl
+            << "tag: " << _tag << endl
+            << "opening tag: " << _openingTag << endl
+            << "closing tag: " << _closingTag << endl
+            << "_attributeSeparator: |||" << _attributeSeparator << "|||" << endl
+            << debugAttrs() << endl)
     }
 
 private:
     void update()
     {
-        dout_indent
-
+        TRY
         const auto attributeCols =
             accumulate(
                 _attrs.begin(),
@@ -628,6 +601,22 @@ private:
         _openingTag = openingTagStream.str();
 
         _closingTag = "\n</" + _tag + ">";
+        CATCH(<< "XmlText::update():" << endl
+            << "tag: " << _tag << endl
+            << "opening tag: " << _openingTag << endl
+            << "closing tag: " << _closingTag << endl
+            << "_attributeSeparator: |||" << _attributeSeparator << "|||" << endl
+            << debugAttrs() << endl)
+    }
+
+    string debugAttrs()
+    {
+        stringstream ss;
+        for (const auto& [fst, snd] : _attrs)
+        {
+            ss << "(" << fst << ", " << snd << ")";
+        }
+        return ss.str();
     }
 };
 
@@ -639,209 +628,83 @@ class ValuesText final : public Text
 public:
     ValuesText(): _names(new MultiText), _values(new MultiText), _columns(new ColumnText(" = "))
     {
-        dout_indent
-        dout "ValuesText::ctor()" << endl;
-
         _columns->add(unique_ptr<MultiText>(_names));
         _columns->add(unique_ptr<MultiText>(_values));
     }
 
     void format(const function<void(const string_view& str)>& accumulator) override
     {
-        dout_indent
-        dout "ValuesText::format()" << endl;
-
+        TRY
         _columns->format(accumulator);
+        CATCH(<< "ValuesText::format()")
     }
 
     Dimensions dimensions() override
     {
-        dout_indent
-
+        TRY
         return _columns->dimensions();
+        CATCH(<< "ValuesText::dimensions()")
     }
 
     void lines(const function<void(const string_view& str)>& handleLine) override
     {
-        dout_indent
-
+        TRY
         _columns->lines(handleLine);
+        CATCH(<< "ValuesText::lines()")
     }
 
     unique_ptr<Text> clone() override
     {
-        dout_indent
-
+        TRY
         auto clone = make_unique<ValuesText>();
         clone->_names->add(_names);
         clone->_values->add(_values);
         return clone;
+        CATCH(<< "ValuesText::clone()")
     }
 
     void add(const char* name, struct text value) const
     {
-        dout_indent
-
-        dout "ValuesText::add(\"" << name << "\", ?)" << endl;
-
+        TRY
         const auto valueTextRef = static_cast<Text*>(value.Ref);
         const auto valueRows = valueTextRef->dimensions().Rows;
-        dout "ValuesText::add()::value rows = " << valueRows << endl;
-        dout "ValuesText::add()::add name = \"" << name << "\"" << endl;
+        
         this->_names->add(make_unique<OneLineText>(name));
         for (size_t i = 1; i < valueRows; ++i)
         {
-            dout "ValuesText::add()::add empty row " << i << endl;
-            this->_names->add(make_unique<OneLineText>(""));
+            this->_names->add(make_unique<OneLineText>(string(strlen(name) - 1, ' ') + "⮱"));
         }
-        dout "ValuesText::add()::add value" << endl;
+
         this->_values->add(unique_ptr<Text>(valueTextRef));
+        CATCH(<< "ValuesText::add()")
     }
 
     void add(const char* name, const char* value) const
     {
-        dout_indent
-        dout "ValuesText::add(\"" << name << "\", \"" << value << "\")" << endl;
-
+        TRY
         this->_names->add(make_unique<OneLineText>(name));
         this->_values->add(make_unique<OneLineText>(value));
+        CATCH(<< "ValuesText::add()")
     }
 };
 
 // C interface #########################################################################################################
 
-EXTERNC void log_print(struct text text)
-{
-    dout_indent
 
-    const auto t = static_cast<Text*>(text.Ref);
-    t->format([](const auto& str)
-    {
-        cerr << str;
-    });
-    cerr << endl;
-    delete t;
-}
-
-thread_local static stack<text> log_c_stack;
-
-EXTERNC void log_c_print()
-{
-    dout_indent
-
-    if (log_c_stack.empty())
-    {
-        return;
-    }
-
-    if (log_c_stack.size() > 1)
-    {
-        const auto numElements = log_c_stack.size();
-        
-        cerr << "too many elements on stack - printing from top to bottom" << endl << string(50, '#') << endl;
-
-        while (!log_c_stack.empty())
-        {
-            const auto [Ref] = log_c_stack.top();
-            cerr << string(50, '#') << endl;
-            cerr << "# element " << log_c_stack.size() << endl;
-            cerr << string(50, '#') << endl;
-            const text clone = {static_cast<Text*>(Ref)->clone().release()};
-            log_print(clone);
-            cerr << string(50, '#') << endl;
-
-            log_c_stack.pop();
-            if (log_c_stack.empty())
-            {
-                delete static_cast<Text*>(Ref);
-            }
-        }
-
-        throw runtime_error(
-            string("there must be exactly one element or no element on the context stack, but there are ") + to_string(
-                numElements));
-    }
-
-    const auto root = log_c_stack.top();
-    log_c_stack.pop();
-
-    log_print(root);
-}
-
-template <class TText>
-void log_c_add_child(const function<void(const text& topContext)>& adder)
-{
-    dout_indent
-
-    if (log_c_stack.empty())
-    {
-        log_c_root(log_xml("default-root"));
-    }
-
-    const auto& topContext = log_c_stack.top();
-
-    if (dynamic_cast<TText*>(static_cast<Text*>(topContext.Ref)) == nullptr)
-    {
-        throw runtime_error("log_c_add_child(): top context has the wrong type");
-    }
-
-    adder(topContext);
-}
-
-void log_c_add_child_generic(const text& child)
-{
-    dout_indent
-    dout "log_c_add_child_generic()" << endl;
-
-    log_c_add_child<Text>([child](const auto& topContext)
-    {
-        dout_indent
-        dout "log_c_add_child_generic(): adder" << endl;
-
-        const auto topContextRef = static_cast<Text*>(topContext.Ref);
-        if (dynamic_cast<MultiText*>(topContextRef) != nullptr)
-        {
-            dout_indent
-            dout "log_c_add_child_generic(): log_multi_add()" << endl;
-
-            log_multi_add(topContext, child);
-        }
-        else if (dynamic_cast<ColumnText*>(topContextRef) != nullptr)
-        {
-            dout_indent
-            dout "log_c_add_child_generic(): log_columns_add()" << endl;
-
-            log_columns_add(topContext, child);
-        }
-        else if (dynamic_cast<XmlText*>(topContextRef) != nullptr)
-        {
-            dout_indent
-            dout "log_c_add_child_generic(): log_xml_inner()" << endl;
-
-            log_xml_inner(topContext, child);
-        }
-        else
-        {
-            throw runtime_error("log_c_add_child(): top context is not a container type");
-        }
-    });
-}
+thread_local static vector<text> log_c_stack;
 
 void log_c_push_container(const text container)
 {
-    dout_indent
-    log_c_stack.push(container);
+    log_c_stack.push_back(container);
 }
 
 void log_c_pop_container()
 {
-    dout_indent
-    log_c_stack.pop();
+    log_c_stack.pop_back();
 }
 
 EXTERNC void log_c_root(text t)
 {
-    dout_indent
     if (!log_c_stack.empty())
     {
         throw runtime_error("log_c_root(): context stack not empty");
@@ -849,522 +712,546 @@ EXTERNC void log_c_root(text t)
     log_c_push_container(t);
 }
 
+template <class TText>
+void log_c_add_child(const function<void(const text& topContext)>& adder)
+{
+    try
+    {
+        if (log_c_stack.empty())
+        {
+            log_c_root(log_xml("default-root"));
+        }
+
+        const auto& topContext = log_c_stack.back();
+
+        if (dynamic_cast<TText*>(static_cast<Text*>(topContext.Ref)) == nullptr)
+        {
+            throw runtime_error(
+                "log_c_add_child(): top context has the wrong type: got '" +
+                string(typeid(topContext.Ref).name()) +
+                "' expected '" + typeid(TText).name() + "'");
+        }
+
+        adder(topContext);
+    }
+    catch (exception& e)
+    {
+        cout << e.what() << endl;
+        cerr << e.what() << endl;
+        throw;
+    }
+    catch (...)
+    {
+        cout << "unknown error" << endl;
+        cerr << "unknown error" << endl;
+        throw;
+    }
+}
+
+void log_c_add_child_generic(const text& child)
+{
+    try
+    {
+        log_c_add_child<Text>([child](const auto& topContext)
+        {
+            const auto topContextRef = static_cast<Text*>(topContext.Ref);
+            if (dynamic_cast<MultiText*>(topContextRef) != nullptr)
+            {
+                log_multi_add(topContext, child);
+            }
+            else if (dynamic_cast<ColumnText*>(topContextRef) != nullptr)
+            {
+                log_columns_add(topContext, child);
+            }
+            else if (dynamic_cast<XmlText*>(topContextRef) != nullptr)
+            {
+                log_xml_inner(topContext, child);
+            }
+            else
+            {
+                throw runtime_error("log_c_add_child(): top context is not a container type");
+            }
+        });
+    }
+    catch (exception& e)
+    {
+        cout << e.what() << endl;
+        cerr << e.what() << endl;
+        throw;
+    }
+    catch (...)
+    {
+        cout << "unknown error" << endl;
+        cerr << "unknown error" << endl;
+        throw;
+    }
+}
+
+EXTERNC void log_print(struct text text)
+{
+    const auto t = static_cast<Text*>(text.Ref);
+    t->format([](const auto& str)
+    {
+        LOG_OSTREAM << str;
+    });
+    cerr << endl;
+    delete t;
+}
+
+EXTERNC void __visible log_c_print()
+{
+    try
+    {
+        if (log_c_stack.empty())
+        {
+            return;
+        }
+
+        const auto root = log_c_stack[0];
+
+        const auto t = static_cast<Text*>(root.Ref);
+        t->format([](const auto& str)
+        {
+            LOG_OSTREAM << str;
+        });
+        LOG_OSTREAM << endl;
+    }
+    catch (exception& e)
+    {
+        cout << e.what() << endl;
+        cerr << e.what() << endl;
+        throw;
+    }
+    catch (...)
+    {
+        cout << "unknown error" << endl;
+        cerr << "unknown error" << endl;
+        throw;
+    }
+}
+
+EXTERNC void __visible log_c_discard()
+{
+    while(!log_c_stack.empty())
+    {
+        auto [Ref] = log_c_stack.back();
+        delete static_cast<Text*>(Ref);
+        log_c_stack.pop_back();
+    }
+}
+
+EXTERNC void log_c_end()
+{
+    log_c_pop_container();
+}
+
+EXTERNC void log_c_t(text t)
+{
+    log_c_add_child_generic(t);
+}
+
+// ONE
+
 EXTERNC text log_one(const char* fmt, ...)
 {
-    dout_indent
-    va_list args;
-    va_start(args, fmt);
-    const auto size = vsnprintf(nullptr, 0, fmt, args); // NOLINT(clang-diagnostic-format-nonliteral)
-    const auto buffer = new char[size + 1];
-    vsnprintf(buffer, size + 1, fmt, args); // NOLINT(clang-diagnostic-format-nonliteral)
-    const auto oneLineText = new OneLineText(buffer);
-    delete[] buffer;
-    va_end(args);
-    return {oneLineText};
+    try
+    {
+        va_list args1, args2;
+        va_start(args1, fmt);
+        va_copy(args2, args1);
+        const auto estimatedSize = vsnprintf(nullptr, 0, fmt, args1); // NOLINT(clang-diagnostic-format-nonliteral)
+        const auto buffer = new char[estimatedSize + 1];
+        const auto actualSize = vsnprintf(buffer, estimatedSize + 1, fmt, args2); // NOLINT(clang-diagnostic-format-nonliteral)
+        if (actualSize < 0 || actualSize >= estimatedSize + 1)
+        {
+            throw runtime_error(
+                "log_one() error actual: " + to_string(actualSize) + ", estimated: " + to_string(estimatedSize));
+        }
+        buffer[actualSize] = '\0';
+        const auto oneLineText = new OneLineText(buffer);
+        delete[] buffer;
+        va_end(args1);
+        va_end(args2);
+        return {oneLineText};
+    }
+    catch (exception& e)
+    {
+        cout << e.what() << endl;
+        cerr << e.what() << endl;
+        throw;
+    }
+    catch (...)
+    {
+        cout << "unknown error" << endl;
+        cerr << "unknown error" << endl;
+        throw;
+    }
 }
 
 EXTERNC void log_c_one(const char* fmt, ...)
 {
-    dout_indent
-    dout "log_c_one()" << endl;
-
-    va_list args;
-    va_start(args, fmt);
-    const auto size = vsnprintf(nullptr, 0, fmt, args); // NOLINT(clang-diagnostic-format-nonliteral)
-    const auto buffer = new char[size + 1];
-    vsnprintf(buffer, size + 1, fmt, args); // NOLINT(clang-diagnostic-format-nonliteral)
-    const auto oneLineText = new OneLineText(buffer);
-    delete[] buffer;
-    va_end(args);
-    log_c_add_child_generic({oneLineText});
+    try
+    {
+        va_list args1, args2;
+        va_start(args1, fmt);
+        va_copy(args2, args1);
+        const auto estimatedSize = vsnprintf(nullptr, 0, fmt, args1); // NOLINT(clang-diagnostic-format-nonliteral)
+        const auto buffer = new char[estimatedSize + 1];
+        const auto actualSize = vsnprintf(buffer, estimatedSize + 1, fmt, args2); // NOLINT(clang-diagnostic-format-nonliteral)
+        if (actualSize < 0 || actualSize >= estimatedSize + 1)
+        {
+            throw runtime_error(
+                "log_one() error actual: " + to_string(actualSize) + ", estimated: " + to_string(estimatedSize));
+        }
+        buffer[actualSize] = '\0';
+        const auto oneLineText = new OneLineText(buffer);
+        delete[] buffer;
+        va_end(args1);
+        va_end(args2);
+        log_c_add_child_generic({oneLineText});
+    }
+    catch (exception& e)
+    {
+        cout << e.what() << endl;
+        cerr << e.what() << endl;
+        throw;
+    }
+    catch (...)
+    {
+        cout << "unknown error" << endl;
+        cerr << "unknown error" << endl;
+        throw;
+    }
 }
+
+// MULTI
 
 EXTERNC text log_multi()
 {
-    dout_indent
-    return {(new MultiText())};
+    return {new MultiText()};
 }
 
-EXTERNC void log_c_multi_begin()
+EXTERNC void log_multi_add(struct text multi_text, struct text text_to_add)
 {
-    dout_indent
+    static_cast<MultiText*>(multi_text.Ref)->add(unique_ptr<Text>(static_cast<Text*>(text_to_add.Ref)));
+}
+
+
+EXTERNC void log_c_multi()
+{
     const auto multi = log_multi();
     log_c_add_child_generic(multi);
     log_c_push_container(multi);
 }
 
-EXTERNC void log_c_multi_end()
-{
-    dout_indent
-    log_c_pop_container();
-}
-
-EXTERNC void log_multi_add(struct text multi_text, struct text text_to_add)
-{
-    dout_indent
-    dout "log_multi_add()" << endl;
-    static_cast<MultiText*>(multi_text.Ref)->add(unique_ptr<Text>(static_cast<Text*>(text_to_add.Ref)));
-}
-
-EXTERNC void log_c_multi_add(struct text text_to_add)
-{
-    dout_indent
-    log_c_add_child<MultiText>([&text_to_add](auto& topContext) { log_multi_add(topContext, text_to_add); });
-}
-
-struct text log_multi(const list<text>& texts)
-{
-    dout_indent
-    const auto multiText = new MultiText();
-    for (const auto [Ref] : texts)
-    {
-        multiText->add(unique_ptr<Text>(static_cast<Text*>(Ref)));
-    }
-    return {multiText};
-}
-
-EXTERNC struct text log_multi_2(struct text txt1, struct text txt2)
-{
-    dout_indent
-    return log_multi({txt1, txt2});
-}
-
-EXTERNC struct text log_multi_3(struct text txt1, struct text txt2, struct text txt3)
-{
-    dout_indent
-    return log_multi({txt1, txt2, txt3});
-}
-
-EXTERNC struct text log_multi_4(struct text txt1, struct text txt2, struct text txt3, struct text txt4)
-{
-    dout_indent
-    return log_multi({txt1, txt2, txt3, txt4});
-}
-
-EXTERNC struct text log_multi_5(struct text txt1, struct text txt2, struct text txt3, struct text txt4,
-                                struct text txt5)
-{
-    dout_indent
-    return log_multi({txt1, txt2, txt3, txt4, txt5});
-}
+// INDENT
 
 EXTERNC text log_indent(struct text text)
 {
-    dout_indent
     return {new IndentedText(unique_ptr<Text>(static_cast<Text*>(text.Ref)))};
 }
 
+// COLUMNS
+
 EXTERNC text log_columns(const char* separator)
 {
-    dout_indent
     return {new ColumnText(separator)};
 }
 
-EXTERNC void log_c_columns_begin(const char* separator)
+EXTERNC void log_columns_add(struct text column_text, struct text column_to_add)
 {
-    dout_indent
+    static_cast<ColumnText*>(column_text.Ref)->add(unique_ptr<Text>(static_cast<Text*>(column_to_add.Ref)));
+}
+
+
+EXTERNC void log_c_columns(const char* separator)
+{
     const auto columns = log_columns(separator);
     log_c_add_child_generic(columns);
     log_c_push_container(columns);
 }
 
-EXTERNC void log_c_columns_end()
-{
-    dout_indent
-    log_c_pop_container();
-}
-
-EXTERNC void log_columns_add(struct text column_text, struct text column_to_add)
-{
-    dout_indent
-    static_cast<ColumnText*>(column_text.Ref)->add(unique_ptr<Text>(static_cast<Text*>(column_to_add.Ref)));
-}
+// XML
 
 EXTERNC text log_xml(const char* tag)
 {
-    dout_indent
     return {new XmlText(tag)};
 }
 
-EXTERNC void log_c_xml_begin(const char* tag)
+EXTERNC void log_xml_attr(struct text xml_text, const char* name, const char* value)
 {
-    dout_indent
+    static_cast<XmlText*>(xml_text.Ref)->attr(name, value);
+}
+
+EXTERNC void log_xml_inner(struct text xml_text, struct text inner_text)
+{
+    static_cast<XmlText*>(xml_text.Ref)->inner(unique_ptr<Text>(static_cast<Text*>(inner_text.Ref)));
+}
+
+
+EXTERNC void log_c_xml(const char* tag)
+{
     const auto xml = log_xml(tag);
     log_c_add_child_generic(xml);
     log_c_push_container(xml);
 }
 
-EXTERNC void log_c_xml_end()
+EXTERNC void log_c_xml_attr(const char* name, const char* value)
 {
-    dout_indent
-    log_c_pop_container();
-}
-
-EXTERNC void log_xml_attr(struct text xml_text, const char* name, const char* value)
-{
-    dout_indent
-    static_cast<XmlText*>(xml_text.Ref)->attr(name, value);
-}
-
-void log_c_xml_attr(const char* name, const char* value)
-{
-    dout_indent
     log_c_add_child<XmlText>([name, value](auto& topContext) { log_xml_attr(topContext, name, value); });
 }
 
-EXTERNC void log_xml_inner(struct text xml_text, struct text inner_text)
-{
-    dout_indent
-    static_cast<XmlText*>(xml_text.Ref)->inner(unique_ptr<Text>(static_cast<Text*>(inner_text.Ref)));
-}
-
-void log_c_xml_inner(const text inner)
-{
-    dout_indent
-    log_c_add_child<XmlText>([&inner](auto& topContext) { log_xml_inner(topContext, inner); });
-}
+// SECTION
 
 EXTERNC text log_section(const char* name)
 {
-    dout_indent
     const auto sectionText = log_xml("section");
     log_xml_attr(sectionText, "name", name);
     return sectionText;
 }
 
-EXTERNC void log_c_section_begin(const char* name)
+EXTERNC void log_section_content(struct text section_text, struct text content)
 {
-    dout_indent
+    static_cast<XmlText*>(section_text.Ref)->inner(unique_ptr<Text>(static_cast<Text*>(content.Ref)));
+}
+
+
+EXTERNC void log_c_section(const char* name)
+{
     const auto section = log_section(name);
     log_c_add_child_generic(section);
     log_c_push_container(section);
 }
 
-EXTERNC void log_c_section_end()
-{
-    dout_indent
-    log_c_pop_container();
-}
-
-EXTERNC void log_section_content(struct text section_text, struct text content)
-{
-    dout_indent
-    static_cast<XmlText*>(section_text.Ref)->inner(unique_ptr<Text>(static_cast<Text*>(content.Ref)));
-}
-
-EXTERNC void log_c_section_content(struct text content)
-{
-    dout_indent
-    log_c_add_child<XmlText>([&content](auto& topContext) { log_xml_inner(topContext, content); });
-}
+// FUNCTION
 
 EXTERNC struct text log_function(const char* name)
 {
-    dout_indent
     const auto functionText = log_xml("function");
     log_xml_attr(functionText, "name", name);
     return functionText;
 }
 
-EXTERNC void log_c_function_begin(const char* name)
+EXTERNC void log_function_params(struct text function_text, struct text param_text)
 {
-    dout_indent
+    static_cast<XmlText*>(function_text.Ref)->inner(unique_ptr<Text>(static_cast<Text*>(param_text.Ref)));
+}
+
+EXTERNC void log_function_body(struct text function_text, struct text body_text)
+{
+    static_cast<XmlText*>(function_text.Ref)->inner(unique_ptr<Text>(static_cast<Text*>(body_text.Ref)));
+}
+
+EXTERNC void log_function_return(struct text function_text, struct text return_text)
+{
+    static_cast<XmlText*>(function_text.Ref)->inner(unique_ptr<Text>(static_cast<Text*>(return_text.Ref)));
+}
+
+
+EXTERNC void log_c_function(const char* name)
+{
     const auto function = log_function(name);
     log_c_add_child_generic(function);
     log_c_push_container(function);
 }
 
-EXTERNC void log_c_function_end()
+EXTERNC void log_c_function_params()
 {
-    dout_indent
-    log_c_pop_container();
-}
-
-EXTERNC void log_c_function_params_begin()
-{
-    dout_indent
     const auto params = log_xml("params");
     log_c_add_child_generic(params);
     log_c_push_container(params);
 }
 
-EXTERNC void log_c_function_params_end()
+EXTERNC void log_c_function_body()
 {
-    log_c_pop_container();
-}
-
-EXTERNC void log_c_function_body_begin()
-{
-    dout_indent
     const auto body = log_xml("body");
     log_c_add_child_generic(body);
     log_c_push_container(body);
 }
 
-EXTERNC void log_c_function_body_end()
+EXTERNC void log_c_function_return()
 {
-    log_c_pop_container();
-}
-
-EXTERNC void log_c_function_return_begin()
-{
-    dout_indent
     const auto ret = log_xml("return");
     log_c_add_child_generic(ret);
     log_c_push_container(ret);
 }
 
-EXTERNC void log_c_function_return_end()
-{
-    log_c_pop_container();
-}
+// LOOP
 
 EXTERNC struct text log_loop(const char* name)
 {
-    dout_indent
     const auto loopText = log_xml("loop");
     log_xml_attr(loopText, "name", name);
     return loopText;
 }
 
-EXTERNC void log_c_loop_begin(const char* name)
-{
-    dout_indent
-    const auto loop = log_loop(name);
-    log_c_add_child_generic(loop);
-    log_c_push_container(loop);
-}
-
-EXTERNC void log_c_loop_end()
-{
-    dout_indent
-    log_c_pop_container();
-}
-
 EXTERNC struct text log_loop_iter(int n)
 {
-    dout_indent
     const auto iterText = log_xml("iteration");
     log_xml_attr(iterText, "n", to_string(n).c_str());
     return iterText;
 }
 
-EXTERNC void log_c_loop_iter_begin(int n)
+
+EXTERNC void log_c_loop(const char* name)
 {
-    dout_indent
+    const auto loop = log_loop(name);
+    log_c_add_child_generic(loop);
+    log_c_push_container(loop);
+}
+
+EXTERNC void log_c_loop_iter(int n)
+{
     const auto iter = log_loop_iter(n);
     log_c_add_child_generic(iter);
     log_c_push_container(iter);
 }
 
-EXTERNC void log_c_loop_iter_end()
+// VALUES
+
+EXTERNC text log_values_tag(const char* tag)
 {
-    dout_indent
-    log_c_pop_container();
+    //return {new ValuesText()};
+    return log_xml(tag);
 }
 
-text log_values()
+EXTERNC struct text log_values()
 {
-    dout_indent
-    return {new ValuesText()};
-}
-
-EXTERNC void log_c_values_begin()
-{
-    dout_indent
-    const auto values = log_values();
-    log_c_add_child_generic(values);
-    log_c_push_container(values);
-}
-
-EXTERNC void log_c_values_end()
-{
-    dout_indent
-    log_c_pop_container();
+    return log_values_tag("values");
 }
 
 EXTERNC void log_values_add(struct text values_text, const char* name, const char* value)
 {
-    dout_indent
-    static_cast<ValuesText*>(values_text.Ref)->add(name, value);
-}
-
-void log_c_values_add(const char* name, const char* value)
-{
-    dout_indent
-    log_c_add_child<ValuesText>([name, value](auto& topContext) { log_values_add(topContext, name, value); });
+    //static_cast<ValuesText*>(values_text.Ref)->add(name, value);
+    const auto val = log_xml("val");
+    log_xml_attr(val, "n", name);
+    log_xml_attr(val, "v", value);
+    log_xml_inner(values_text, val);
 }
 
 EXTERNC void log_values_add_t(struct text values_text, const char* name, struct text value)
 {
-    dout_indent
-    dout "log_values_add_t()" << endl;
-
-    static_cast<ValuesText*>(values_text.Ref)->add(name, value);
-}
-
-void log_c_values_add_t(const char* name, struct text value)
-{
-    dout_indent
-    dout "log_c_values_add_t()" << endl;
-
-    log_c_add_child<ValuesText>([name, value](auto& topContext) { log_values_add_t(topContext, name, value); });
+    //static_cast<ValuesText*>(values_text.Ref)->add(name, value);
+    const auto val = log_xml("val");
+    log_xml_attr(val, "n", name);
+    log_xml_inner(val, value);
+    log_xml_inner(values_text, val);
 }
 
 EXTERNC void log_values_add_i(struct text values_text, const char* name, int value)
 {
-    dout_indent
     log_values_add(values_text, name, to_string(value).c_str());
-}
-
-EXTERNC void log_c_values_add_i(const char* name, int value)
-{
-    dout_indent
-    log_c_add_child<ValuesText>([name, value](auto& topContext) { log_values_add_i(topContext, name, value); });
 }
 
 EXTERNC void log_values_add_d(struct text values_text, const char* name, double value)
 {
-    dout_indent
     log_values_add(values_text, name, to_string(value).c_str());
-}
-
-EXTERNC void log_c_values_add_d(const char* name, double value)
-{
-    dout_indent
-    log_c_add_child<ValuesText>([name, value](auto& topContext) { log_values_add_d(topContext, name, value); });
 }
 
 EXTERNC void log_values_add_b(struct text values_text, const char* name, int value)
 {
-    dout_indent
     log_values_add(values_text, name, value ? "true" : "false");
+}
+
+
+EXTERNC void log_c_values_tag(const char* tag)
+{
+    const auto values = log_values_tag(tag);
+    log_c_add_child_generic(values);
+    log_c_push_container(values);
+}
+
+EXTERNC void log_c_values()
+{
+    log_c_values_tag("values");
+}
+
+EXTERNC void log_c_values_add(const char* name, const char* value)
+{
+    //log_c_add_child<ValuesText>([name, value](auto& topContext) { log_values_add(topContext, name, value); });
+    log_c_add_child<XmlText>([name, value](auto& topContext) { log_values_add(topContext, name, value); });
+}
+
+EXTERNC void log_c_values_add_t(const char* name, struct text value)
+{
+    //log_c_add_child<ValuesText>([name, value](auto& topContext) { log_values_add_t(topContext, name, value); });
+    log_c_add_child<XmlText>([name, value](auto& topContext) { log_values_add_t(topContext, name, value); });
+}
+
+EXTERNC void log_c_values_add_i(const char* name, int value)
+{
+    // log_c_add_child<ValuesText>([name, value](auto& topContext) { log_values_add_i(topContext, name, value); });
+    log_c_add_child<XmlText>([name, value](auto& topContext) { log_values_add_i(topContext, name, value); });
+}
+
+EXTERNC void log_c_values_add_d(const char* name, double value)
+{
+    // log_c_add_child<ValuesText>([name, value](auto& topContext) { log_values_add_d(topContext, name, value); });
+    log_c_add_child<XmlText>([name, value](auto& topContext) { log_values_add_d(topContext, name, value); });
 }
 
 EXTERNC void log_c_values_add_b(const char* name, int value)
 {
-    dout_indent
-    log_c_add_child<ValuesText>([name, value](auto& topContext) { log_values_add_b(topContext, name, value); });
+    // log_c_add_child<ValuesText>([name, value](auto& topContext) { log_values_add_b(topContext, name, value); });
+    log_c_add_child<XmlText>([name, value](auto& topContext) { log_values_add_b(topContext, name, value); });
 }
 
+// OTHER
 
+EXTERNC struct text log_value_move(::move* move)
+{
+    struct text multi = log_multi();
+    struct text values = log_values();
+    log_multi_add(multi, values);
+    log_values_add_d(values, "print_time", move->print_time);
+    log_values_add_d(values, "move_t", move->move_t);
+    log_values_add_d(values, "start_v", move->start_v);
+    log_values_add_d(values, "half_accel", move->half_accel);
+    log_values_add_t(values, "start_pos", log_value_coord(move->start_pos));
+    log_values_add_t(values, "axes_r", log_value_coord(move->axes_r));
+    log_values_add_b(values, "is_backlash_compensation_move", move->is_backlash_compensation_move);
+    return multi;
+}
+
+//
+// void test_fn()
+// {
+// LOG_C_CONTEXT
+//     
+//     LOG_C_SECTION("TEST_SECTION")
+//
+//     if(true)
+//     {
+// LOG_C_CONTEXT
+//         LOG_C_SECTION("INNER SECTION")
+//         log_c_one("Innere Zeile 1");
+//     }
+//     log_c_one("Zeile eins");
+//     log_c_one("Zeile zwei");
+// }
+//
 // int main()
 // {
-//     log_c_root(log_xml("Wurzel"));
+//     log_c_root(log_xml("Wurzel"));  
 //
-//     // log_c_columns_begin(" <#> ");
-//     //
-//     // log_c_columns_begin("|");
-//     // log_c_multi_begin();
-//     // log_c_one("Sub Spalte 1 Zeile 1");
-//     // log_c_one("Sub Spalte 1 Zeile 2");
-//     // log_c_multi_end();
-//     // log_c_columns_end();
-//     //
-//     // log_c_columns_end();
+//     test_fn();    
 //
-//
-//     // log_c_multi_begin();
-//     //
-//     // log_c_one("Zeile 1");
-//     // log_c_one("Zeile 2");
-//     //
-//     // log_c_multi_begin();    
-//     // log_c_one("Zeile 3.1");
-//     // log_c_one("Zeile 3.2");
-//     // log_c_one("Zeile 3.3");
-//     // log_c_one("Zeile 3.4");        
-//     // log_c_multi_end();
-//     //
-//     // log_c_one("Zeile 4");
-//     // log_c_one("Zeile 5");
-//     //
-//     //
-//     // log_c_multi_end();
-//
-//
-//     log_c_one("Hugo");
-//     log_c_function_begin("foo");
-//
-//     log_c_function_params(log_one("my param"));
-//
-//     log_c_function_params(log_one("your param"));
-//
-//     log_c_loop_begin("my loop");
-//
-//     log_c_loop_iter_begin(1);
-//
-//     log_c_columns_begin(" <#> ");
-//
-//     log_c_one("Hugo");
-//
-//     log_c_one("Hase");
-//
-//     log_c_multi_begin();
-//
-//     log_c_one("Spalte 3 Zeile 1");
-//     log_c_one("Spalte 3 Zeile 2");
-//     log_c_one("Spalte 3 Zeile 3");
-//     log_c_one("Spalte 3 Zeile 4");
-//
-//     log_c_multi_end();
-//
-//     log_c_one("Spalte 4");
-//
-//     log_c_columns_begin("|");
-//
-//     log_c_multi_begin();
-//
-//     log_c_one("Sub Spalte 1 Zeile 1");
-//     log_c_one("Sub Spalte 1 Zeile 2");
-//
-//     log_c_multi_end();
-//
-//     log_c_multi_begin();
-//
-//     log_c_one("Sub Spalte 2 Zeile 1");
-//     log_c_one("Sub Spalte 2 Zeile 2");
-//
-//     log_c_multi_end();
-//
-//     log_c_columns_end();
-//
-//     log_c_values_begin();
-//
-//     log_c_values_add_b("isses wahr", true);
-//     log_c_values_add_d("bouble", 24.7345);
-//     const auto xmlValue = log_xml("xml-value");
-//     log_xml_inner(xmlValue, log_one("wert im we"));
-//     log_c_values_add_t("isses wahr", xmlValue);
-//     log_c_values_add_i("integeres", 4711);
-//     log_c_values_add("stresa", "ich bin ein Stirargafagf");
-//     log_c_values_add("bummleum", "bobbela");
-//
-//     log_c_values_end();
-//
-//     log_c_multi_begin();
-//
-//     log_c_one("Zeile 1");
-//     log_c_one("Zeile 2");
-//     log_c_one("Zeile 3 mit ganz langem Text");
-//     log_c_one("blubber");
-//
-//     log_c_multi_end();
-//
-//     log_c_columns_end();
-//
-//     log_c_loop_end();
-//
-//     log_c_loop_end();
-//
-//     log_c_function_end();
-//
-//
-//     dout "BEGIN PRINT ##################################################################" << endl;
-//
-//     log_c_print();
-//
-//     dout "## END" << endl;
+//     log_c_print();    
 //
 //     return 0;
+// }
+
+
+//
+// void scoped(int * pvariable) {
+//     printf("variable (%d) goes out of scope\n", *pvariable);
+// }
+//
+// int main(void) {
+//     printf("before scope\n");
+//     {
+//         int watched __attribute__((__cleanup__ (scoped)));
+//         watched = 42;
+//     }
+//     printf("after scope\n");
 // }

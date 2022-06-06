@@ -6,7 +6,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, gc, optparse, logging, time, collections, importlib
 import util, reactor, queuelogger, msgproto
-import gcode, configfile, pins, mcu, toolhead, webhooks
+import gcode, configfile, pins, mcu, toolhead, webhooks, chelper
 
 message_ready = "Printer is ready"
 
@@ -378,8 +378,12 @@ def main():
     if bglogger is not None:
         bglogger.stop()
 
+    _, ffi_lib = chelper.get_ffi()
     if res == 'error_exit':
+        ffi_lib.log_c_print()
         sys.exit(-1)
+    else:
+        ffi_lib.log_c_discard()
 
 if __name__ == '__main__':
     main()
